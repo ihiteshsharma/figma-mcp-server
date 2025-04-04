@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Figma MCP Server Plugin</title>
+  <style>
+    body {
+      font-family: Inter, sans-serif;
+      margin: 0;
+      padding: 20px;
+      color: #333;
+    }
+    
+    h1 {
+      font-size: 16px;
+      margin-bottom: 10px;
+      font-weight: 600;
+    }
+    
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      margin-bottom: 15px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background-color: #F0F7FF;
+    }
+    
+    .status-indicator-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background-color: #2D9CDB;
+      margin-right: 10px;
+    }
+    
+    .status-text {
+      font-size: 14px;
+      font-weight: 500;
+    }
+    
+    .plugin-info {
+      margin-bottom: 15px;
+      font-size: 12px;
+      background-color: #F8F8F8;
+      padding: 10px;
+      border-radius: 6px;
+    }
+    
+    .message {
+      margin-bottom: 15px;
+      padding: 10px;
+      border-radius: 6px;
+      background-color: #F5F5F5;
+      border-left: 4px solid #2D9CDB;
+    }
+    
+    .message.error {
+      border-left-color: #EB5757;
+      background-color: #FEEFEF;
+    }
+    
+    .message.success {
+      border-left-color: #6FCF97;
+      background-color: #EFFFEF;
+    }
+    
+    .message-header {
+      font-weight: 500;
+      margin-bottom: 5px;
+    }
+    
+    .message-content {
+      font-size: 12px;
+      color: #666;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+    }
+    
+    .command-panel {
+      margin-top: 20px;
+      border-top: 1px solid #EEEEEE;
+      padding-top: 15px;
+    }
+    
+    .input-group {
+      margin-bottom: 10px;
+    }
+    
+    label {
+      display: block;
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+    
+    input, textarea, select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #DDDDDD;
+      border-radius: 4px;
+      font-size: 12px;
+      box-sizing: border-box;
+    }
+    
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+    
+    button {
+      background-color: #2D9CDB;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      margin-top: 10px;
+    }
+    
+    button:hover {
+      background-color: #2A8FC7;
+    }
+  </style>
+</head>
+<body>
+  <h1>Figma MCP Server Plugin</h1>
+  
+  <div id="status" class="status-indicator">
+    <div class="status-indicator-dot"></div>
+    <div class="status-text">Ready</div>
+  </div>
+  
+  <div id="plugin-info" class="plugin-info">
+    <div><strong>Mode:</strong> <span id="mode">Direct</span></div>
+    <div><strong>Plugin ID:</strong> <span id="plugin-id">Loading...</span></div>
+    <div><strong>Current Page:</strong> <span id="current-page">Loading...</span></div>
+  </div>
+  
+  <div id="messages">
+    <!-- Messages will be added here -->
+  </div>
+  
+  <div class="command-panel">
+    <h2>Test Commands</h2>
+    <div class="input-group">
+      <label for="command-type">Command Type</label>
+      <select id="command-type">
+        <option value="CREATE_WIREFRAME">Create Wireframe</option>
+        <option value="ADD_ELEMENT">Add Element</option>
+        <option value="STYLE_ELEMENT">Style Element</option>
+        <option value="EXPORT_DESIGN">Export Design</option>
+        <option value="GET_SELECTION">Get Selection</option>
+        <option value="GET_CURRENT_PAGE">Get Current Page</option>
+      </select>
+    </div>
+    
+    <div class="input-group">
+      <label for="command-payload">Command Payload (JSON)</label>
+      <textarea id="command-payload">{
+  "description": "Sample Wireframe",
+  "pages": ["Home", "About"],
+  "style": "minimal",
+  "dimensions": {
+    "width": 1440,
+    "height": 900
+  },
+  "designSystem": {
+    "colors": {
+      "primary": "#2D9CDB",
+      "secondary": "#F2994A"
+    }
+  }
+}</textarea>
+    </div>
+    
+    <button id="execute-command">Execute Command</button>
+  </div>
+  
+  <script>
+    // Communication bridge to plugin code
+    const pluginMessages = document.getElementById('messages');
+    const statusIndicator = document.getElementById('status');
+    const statusDot = statusIndicator.querySelector('.status-indicator-dot');
+    const statusText = statusIndicator.querySelector('.status-text');
+    const commandType = document.getElementById('command-type');
+    const commandPayload = document.getElementById('command-payload');
+    const executeCommand = document.getElementById('execute-command');
+    const pluginIdElement = document.getElementById('plugin-id');
+    const currentPageElement = document.getElementById('current-page');
+    
+    // Set initial status
+    updateStatus('Ready', '#2D9CDB');
+    
+    // Update command payload based on selected command type
+    commandType.addEventListener('change', () => {
+      let defaultPayload = {};
+      
+      switch (commandType.value) {
+        case 'CREATE_WIREFRAME':
+          defaultPayload = {
+            description: "Sample Wireframe",
+            pages: ["Home", "About"],
+            style: "minimal",
+            dimensions: {
+              width: 1440,
+              height: 900
+            },
+            designSystem: {
+              colors: {
+                primary: "#2D9CDB",
+                secondary: "#F2994A"
+              }
+            }
+          };
+          break;
+        case 'ADD_ELEMENT':
+          defaultPayload = {
+            elementType: "BUTTON",
+            parent: "current-selection",
+            properties: {
+              text: "Click Me",
+              width: 120,
+              height: 40
+            }
+          };
+          break;
+        case 'STYLE_ELEMENT':
+          defaultPayload = {
+            elementId: "current-selection",
+            styles: {
+              description: "A modern blue button with rounded corners",
+              fill: "#0066FF"
+            }
+          };
+          break;
+        case 'EXPORT_DESIGN':
+          defaultPayload = {
+            selection: [],
+            settings: {
+              format: "PNG",
+              constraint: {
+                type: "SCALE",
+                value: 2
+              },
+              includeBackground: true
+            }
+          };
+          break;
+        case 'GET_SELECTION':
+        case 'GET_CURRENT_PAGE':
+          defaultPayload = {};
+          break;
+      }
+      
+      commandPayload.value = JSON.stringify(defaultPayload, null, 2);
+    });
+    
+    // Execute custom command
+    executeCommand.addEventListener('click', () => {
+      try {
+        let payload = JSON.parse(commandPayload.value);
+        
+        // Special handling for current selection
+        if (payload.parent === "current-selection" || payload.elementId === "current-selection") {
+          addMessage('INFO', 'info', 'Using current selection as parent/element ID');
+        }
+        
+        // Make sure required fields are present
+        if (commandType.value === 'CREATE_WIREFRAME' && !payload.description) {
+          addMessage('ERROR', 'error', 'Description is required for CREATE_WIREFRAME');
+          return;
+        }
+        
+        // Create the command object with the correct structure
+        const command = {
+          type: commandType.value,
+          payload: payload,
+          id: `manual_${Date.now()}`
+        };
+        
+        // Log the command we're sending for debugging
+        console.log('Sending command to plugin:', command);
+        
+        // Create the message object exactly as expected by the plugin
+        const pluginMessage = {
+          type: command.type,
+          payload: command.payload,
+          id: command.id
+        };
+        
+        // Send command to plugin code - make sure we're sending the right structure
+        parent.postMessage({ pluginMessage: pluginMessage }, '*');
+        
+        // Show sent command
+        addMessage('COMMAND_SENT', 'info', 'Command sent to plugin: ' + JSON.stringify(pluginMessage, null, 2));
+        
+        // Update status
+        updateStatus('Processing: ' + commandType.value, '#FFB800');
+      } catch (e) {
+        addMessage('ERROR', 'error', 'Invalid JSON payload: ' + e.message);
+      }
+    });
+    
+    // Function to update status
+    function updateStatus(text, color) {
+      statusText.textContent = text;
+      statusDot.style.backgroundColor = color;
+    }
+    
+    // Handle messages from the server
+    window.onmessage = (event) => {
+      const message = event.data.pluginMessage;
+      
+      // Handle the message coming from plugin code
+      if (message) {
+        console.log('UI received message:', message);
+        
+        // Special handling for plugin startup
+        if (message.type === 'PLUGIN_STARTED') {
+          updateStatus('Connected', '#6FCF97');
+          if (message.data) {
+            pluginIdElement.textContent = message.data.pluginId || 'Unknown';
+            currentPageElement.textContent = message.data.currentPage || 'Unknown';
+          }
+          addMessage('STARTUP', 'success', 'Plugin connected and ready');
+          return;
+        }
+        
+        // Special handling for command received
+        if (message.type === 'COMMAND_RECEIVED') {
+          const command = message.data?.command || 'unknown';
+          updateStatus(`Processing: ${command}`, '#FFB800');
+          addMessage(message.type, 'success', `Received command: ${command}`);
+          return;
+        }
+        
+        // Add the message to the UI
+        const messageContent = message.data 
+          ? JSON.stringify(message.data, null, 2) 
+          : message.error || 'No data';
+        
+        addMessage(message.type, message.success ? 'success' : 'error', messageContent);
+        
+        // Update status based on message
+        if (message.success) {
+          updateStatus('Success: ' + message.type, '#6FCF97');
+        } else {
+          updateStatus('Error: ' + message.type, '#EB5757');
+        }
+        
+        // Only send back successful responses to avoid loops
+        if (message.success && !message.type.startsWith('UI_')) {
+          // Send the message back to the plugin code
+          // The plugin code will then send it to the MCP server
+          parent.postMessage({ pluginMessage: message }, '*');
+        }
+      }
+    };
+    
+    // Add a message to the UI
+    function addMessage(type, status, content) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `message ${status}`;
+      
+      const header = document.createElement('div');
+      header.className = 'message-header';
+      header.textContent = type;
+      
+      const messageContent = document.createElement('div');
+      messageContent.className = 'message-content';
+      messageContent.textContent = content;
+      
+      messageDiv.appendChild(header);
+      messageDiv.appendChild(messageContent);
+      
+      pluginMessages.appendChild(messageDiv);
+      
+      // Limit number of messages to keep UI clean
+      if (pluginMessages.childNodes.length > 10) {
+        pluginMessages.removeChild(pluginMessages.firstChild);
+      }
+      
+      // Scroll to the latest message
+      messageDiv.scrollIntoView({ behavior: 'smooth' });
+    }
+    
+    // Send a ready message to the plugin
+    parent.postMessage({ pluginMessage: { type: 'UI_READY' } }, '*');
+  </script>
+</body>
+</html> 

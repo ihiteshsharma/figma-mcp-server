@@ -1,0 +1,39 @@
+{
+  "name": "figma-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for Figma design creation via AI assistants",
+  "main": "index.js",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "inspector": "npx -y @modelcontextprotocol/inspector@latest --server \"npm run dev\"",
+    "server": "npm run build && node dist/index.js"
+  },
+  "keywords": [
+    "figma",
+    "mcp",
+    "ai",
+    "design"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.1.0"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.109.0",
+    "@modelcontextprotocol/inspector": "^0.7.0",
+    "@types/node": "^22",
+    "nodemon": "^3.0.1",
+    "shx": "^0.3.4",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "MCP Server Plugin",
+  "id": "1234567890123456789",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma", "dev"],
+  "networkAccess": {
+    "allowedDomains": [
+      "https://fonts.googleapis.com",
+      "https://fonts.gstatic.com"
+    ]
+  },
+  "menu": [
+    {
+      "name": "Create Wireframe",
+      "command": "create-wireframe"
+    },
+    {
+      "name": "Add Element",
+      "command": "add-element"
+    },
+    {
+      "name": "Export Design",
+      "command": "export-design"
+    }
+  ]
+} 
