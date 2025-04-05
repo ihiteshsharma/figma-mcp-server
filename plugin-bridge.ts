@@ -82,6 +82,7 @@ export type PluginCommand =
   | { type: 'GET_SELECTION', payload?: any, id?: string }
   | { type: 'GET_CURRENT_PAGE', payload?: any, id?: string };
 
+// Define a more specific type for responses from the plugin that will be mapped to MCP
 export type PluginResponse = {
   type: string;
   success: boolean;
@@ -89,6 +90,7 @@ export type PluginResponse = {
   error?: string;
   id?: string;
   _isResponse?: boolean;
+  mcpRequestId?: number; // Add field to track MCP request ID
 };
 
 // Session context to track the state across commands
@@ -114,6 +116,9 @@ export class PluginBridge {
   private wsConnections: Set<WebSocket> = new Set();
   private isServerRunning: boolean = false;
   private webSocketPort: number = 9000; // Default port for WebSocket server
+  private mcpServer: any = null; // Store reference to MCP server
+  // Map plugin command IDs to MCP request IDs
+  private mcpRequestMap: Map<string, number> = new Map();
   
   // Add session tracking to maintain context between commands
   private sessionContext: SessionContext = {
@@ -198,29 +203,7 @@ To connect with the Figma plugin:
           this.wsConnections.add(ws);
           
           // Handle messages from Figma plugin
-          ws.on('message', (data: WebSocket.Data) => {
-            try {
-              const message = JSON.parse(data.toString());
-              logger.debug('Received message from Figma plugin', { message });
-              
-              // If it's a response to a command
-              if (message._isResponse && message.id && this.responseCallbacks.has(message.id)) {
-                const callback = this.responseCallbacks.get(message.id);
-                if (callback) {
-                  // Update session context from response
-                  this.updateSessionFromResponse(message);
-                  
-                  // Call the callback with the response
-                  callback(message);
-                  this.responseCallbacks.delete(message.id);
-                }
-              } else {
-                logger.debug('Received non-response message', { message });
-              }
-            } catch (error) {
-              logger.error('Error handling WebSocket message', error as Error);
-            }
-          });
+          ws.on('message', (data: WebSocket.Data) => this.handlePluginMessage(data));
           
           // Handle WebSocket errors
           ws.on('error', (error: Error) => {
@@ -321,7 +304,7 @@ To connect with the Figma plugin:
             this.updateSessionFromResponse(response);
             
             if (response.success) {
-              resolve(response.data as T);
+              resolve(response as unknown as T);
             } else {
               reject(new Error(response.error || 'Unknown error'));
             }
@@ -594,9 +577,135 @@ To connect with the Figma plugin:
   public connectToMCPServer(server: any): void {
     logger.log('Connecting MCP server to Figma plugin...');
     
+    // Store reference to MCP server
+    this.mcpServer = server;
+    
     // Nothing special needs to be done here as the WebSocket server
     // is already running in real mode
     logger.log('Plugin bridge ready for MCP server integration');
+  }
+
+  // Store MCP request ID for a plugin command
+  public storeMcpRequestId(pluginCommandId: string, mcpRequestId: number): void {
+    this.mcpRequestMap.set(pluginCommandId, mcpRequestId);
+    logger.debug(`Mapped plugin command ID ${pluginCommandId} to MCP request ID ${mcpRequestId}`);
+  }
+
+  // Convert plugin response to JSON-RPC format for MCP server
+  public transformToJsonRpc(response: PluginResponse): any {
+    // Get the MCP request ID associated with this plugin command
+    const mcpRequestId = this.mcpRequestMap.get(response.id || '') || 0;
+    
+    if (response.success) {
+      // Format successful response
+      let successMessage = `Successfully completed ${response.type.toLowerCase().replace('_', ' ')}`;
+      
+      // Add more specific details based on command type
+      switch (response.type) {
+        case 'CREATE_WIREFRAME':
+          successMessage = `Successfully created wireframe with ID: ${response.data?.wireframeId || 'unknown'}`;
+          break;
+        case 'ADD_ELEMENT':
+          successMessage = `Successfully created ${response.data?.type || 'component'} with ID: ${response.data?.id || 'unknown'}`;
+          break;
+        case 'STYLE_ELEMENT':
+          successMessage = `Successfully styled element with ID: ${response.data?.id || 'unknown'}`;
+          break;
+        case 'EXPORT_DESIGN':
+          successMessage = `Successfully exported design${response.data?.files ? ` (${response.data.files.length} files)` : ''}`;
+          break;
+      }
+      
+      return {
+        jsonrpc: "2.0",
+        id: mcpRequestId,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: successMessage
+            }
+          ],
+          isError: false
+        }
+      };
+    } else {
+      // Format error response
+      return {
+        jsonrpc: "2.0",
+        id: mcpRequestId,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: `Error: ${response.error || 'Unknown error'}`
+            }
+          ],
+          isError: true
+        }
+      };
+    }
+  }
+
+  // Add a method to send JSON-RPC responses to the MCP server
+  public sendJsonRpcResponse(mcpResponse: any): void {
+    // If we have a reference to the MCP server, send the response
+    if (this.mcpServer) {
+      try {
+        logger.debug('Sending JSON-RPC response to MCP server', { response: mcpResponse });
+        
+        // The MCP server SDK exposes a transport object we can use to send responses
+        if (this.mcpServer.transport && typeof this.mcpServer.transport.sendResponse === 'function') {
+          // Send the response through the MCP server transport
+          this.mcpServer.transport.sendResponse(mcpResponse);
+          logger.debug('JSON-RPC response sent successfully');
+        } else {
+          logger.warn('MCP server transport not available for sending response');
+        }
+      } catch (error) {
+        logger.error('Error sending JSON-RPC response to MCP server', error as Error);
+      }
+    } else {
+      logger.warn('Cannot send JSON-RPC response - no MCP server reference');
+    }
+  }
+
+  // Update the handlePluginMessage method to use sendJsonRpcResponse
+  private handlePluginMessage(data: WebSocket.Data): void {
+    try {
+      const message = JSON.parse(data.toString());
+      logger.debug('Received message from Figma plugin', { message });
+      
+      // If it's a response to a command
+      if (message._isResponse && message.id && this.responseCallbacks.has(message.id)) {
+        const callback = this.responseCallbacks.get(message.id);
+        if (callback) {
+          // Update session context from response
+          this.updateSessionFromResponse(message);
+          
+          // Call the callback with the response
+          callback(message);
+          this.responseCallbacks.delete(message.id);
+          
+          // If we have an MCP server reference and this response has an associated MCP request ID,
+          // transform and send the response to the MCP server
+          if (this.mcpServer && this.mcpRequestMap.has(message.id)) {
+            const mcpResponse = this.transformToJsonRpc(message);
+            logger.debug('Transformed response for MCP server', { mcpResponse });
+            
+            // Send the transformed response to the MCP server
+            this.sendJsonRpcResponse(mcpResponse);
+            
+            // Clean up the mapping
+            this.mcpRequestMap.delete(message.id);
+          }
+        }
+      } else {
+        logger.debug('Received non-response message', { message });
+      }
+    } catch (error) {
+      logger.error('Error handling WebSocket message', error as Error);
+    }
   }
 }
 

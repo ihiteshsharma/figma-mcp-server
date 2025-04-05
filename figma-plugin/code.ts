@@ -194,6 +194,692 @@ figma.ui.onmessage = async (message: PluginMessage | { type: string, _isResponse
 };
 
 /**
+ * Enhanced styling system
+ */
+
+// Extended style interface to document all possible style options
+interface ExtendedStyleOptions {
+  // Basic properties
+  name?: string;
+  description?: string;
+  
+  // Positioning and dimensions
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  positioning?: 'AUTO' | 'ABSOLUTE';
+  
+  // Appearance
+  fill?: string | {r: number, g: number, b: number, a?: number} | Array<{type: string, color: {r: number, g: number, b: number, a?: number}, opacity?: number, visible?: boolean}>;
+  stroke?: string | {r: number, g: number, b: number, a?: number};
+  strokeWeight?: number;
+  strokeAlign?: 'INSIDE' | 'OUTSIDE' | 'CENTER';
+  cornerRadius?: number | {topLeft?: number, topRight?: number, bottomRight?: number, bottomLeft?: number};
+  
+  // Effects
+  effects?: Array<{
+    type: 'DROP_SHADOW' | 'INNER_SHADOW' | 'LAYER_BLUR' | 'BACKGROUND_BLUR';
+    color?: {r: number, g: number, b: number, a?: number};
+    offset?: {x: number, y: number};
+    radius?: number;
+    spread?: number;
+    visible?: boolean;
+    blendMode?: BlendMode;
+  }>;
+  
+  // Layout
+  layoutMode?: 'NONE' | 'HORIZONTAL' | 'VERTICAL';
+  primaryAxisAlignItems?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN';
+  counterAxisAlignItems?: 'MIN' | 'CENTER' | 'MAX';
+  itemSpacing?: number;
+  paddingLeft?: number;
+  paddingRight?: number;
+  paddingTop?: number;
+  paddingBottom?: number;
+  
+  // Text specific
+  fontSize?: number;
+  fontWeight?: number | string;
+  fontName?: FontName;
+  textCase?: 'ORIGINAL' | 'UPPER' | 'LOWER' | 'TITLE';
+  textDecoration?: 'NONE' | 'UNDERLINE' | 'STRIKETHROUGH';
+  letterSpacing?: {value: number, unit: 'PIXELS' | 'PERCENT'};
+  lineHeight?: {value: number, unit: 'PIXELS' | 'PERCENT' | 'AUTO'};
+  textAlignHorizontal?: 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED';
+  textAlignVertical?: 'TOP' | 'CENTER' | 'BOTTOM';
+  
+  // Content
+  text?: string;
+  characters?: string;
+  content?: string;
+  
+  // Brand colors (for easy reference)
+  brandColors?: {
+    [key: string]: string;
+  };
+  
+  // Custom styles object for extensibility
+  [key: string]: any;
+}
+
+/**
+ * Enhanced color parsing with support for CSS color formats, brand colors and transparency
+ * Supports: hex, rgb, rgba, hsl, hsla, named colors, and brand color references
+ */
+function enhancedParseColor(colorInput: string | {r: number, g: number, b: number, a?: number} | undefined, brandColors?: {[key: string]: string}): {r: number, g: number, b: number, a: number} {
+  // Default to black if undefined
+  if (!colorInput) {
+    return { r: 0, g: 0, b: 0, a: 1 };
+  }
+  
+  // If it's already an RGB object
+  if (typeof colorInput !== 'string') {
+    return { 
+      r: colorInput.r, 
+      g: colorInput.g, 
+      b: colorInput.b, 
+      a: colorInput.a !== undefined ? colorInput.a : 1 
+    };
+  }
+  
+  const colorStr = colorInput.trim();
+  
+  // Check for brand color references like "brand:primary" or "#primary"
+  if (brandColors && (colorStr.startsWith('brand:') || colorStr.startsWith('#'))) {
+    const colorKey = colorStr.startsWith('brand:') 
+      ? colorStr.substring(6) 
+      : colorStr.substring(1);
+    
+    if (brandColors[colorKey]) {
+      // Recursively parse the brand color value
+      return enhancedParseColor(brandColors[colorKey]);
+    }
+  }
+
+  // Handle hex colors
+  if (colorStr.startsWith('#')) {
+    try {
+      let hex = colorStr.substring(1);
+      
+      // Convert short hex to full hex
+      if (hex.length === 3) {
+        hex = hex.split('').map(char => char + char).join('');
+      }
+      
+      // Handle hex with alpha
+      let r, g, b, a = 1;
+      
+      if (hex.length === 8) {
+        // #RRGGBBAA format
+        r = parseInt(hex.substring(0, 2), 16) / 255;
+        g = parseInt(hex.substring(2, 4), 16) / 255;
+        b = parseInt(hex.substring(4, 6), 16) / 255;
+        a = parseInt(hex.substring(6, 8), 16) / 255;
+      } else if (hex.length === 6) {
+        // #RRGGBB format
+        r = parseInt(hex.substring(0, 2), 16) / 255;
+        g = parseInt(hex.substring(2, 4), 16) / 255;
+        b = parseInt(hex.substring(4, 6), 16) / 255;
+      } else if (hex.length === 4) {
+        // #RGBA format
+        r = parseInt(hex.substring(0, 1) + hex.substring(0, 1), 16) / 255;
+        g = parseInt(hex.substring(1, 2) + hex.substring(1, 2), 16) / 255;
+        b = parseInt(hex.substring(2, 3) + hex.substring(2, 3), 16) / 255;
+        a = parseInt(hex.substring(3, 4) + hex.substring(3, 4), 16) / 255;
+      } else {
+        throw new Error('Invalid hex color format');
+      }
+      
+      return { r, g, b, a };
+    } catch (e) {
+      console.warn('Invalid hex color:', colorStr);
+    }
+  }
+  
+  // Handle RGB/RGBA colors
+  if (colorStr.startsWith('rgb')) {
+    try {
+      const values = colorStr.match(/[\d.]+/g);
+      if (values && values.length >= 3) {
+        const r = parseInt(values[0]) / 255;
+        const g = parseInt(values[1]) / 255;
+        const b = parseInt(values[2]) / 255;
+        const a = values.length >= 4 ? parseFloat(values[3]) : 1;
+        return { r, g, b, a };
+      }
+    } catch (e) {
+      console.warn('Invalid rgb color:', colorStr);
+    }
+  }
+  
+  // Handle HSL/HSLA colors
+  if (colorStr.startsWith('hsl')) {
+    try {
+      const values = colorStr.match(/[\d.]+/g);
+      if (values && values.length >= 3) {
+        // Convert HSL to RGB
+        const h = parseInt(values[0]) / 360;
+        const s = parseInt(values[1]) / 100;
+        const l = parseInt(values[2]) / 100;
+        const a = values.length >= 4 ? parseFloat(values[3]) : 1;
+        
+        // HSL to RGB conversion algorithm
+        let r, g, b;
+        
+        if (s === 0) {
+          r = g = b = l; // Achromatic (gray)
+        } else {
+          const hue2rgb = (p: number, q: number, t: number) => {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1/6) return p + (q - p) * 6 * t;
+            if (t < 1/2) return q;
+            if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+            return p;
+          };
+          
+          const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+          const p = 2 * l - q;
+          
+          r = hue2rgb(p, q, h + 1/3);
+          g = hue2rgb(p, q, h);
+          b = hue2rgb(p, q, h - 1/3);
+        }
+        
+        return { r, g, b, a };
+      }
+    } catch (e) {
+      console.warn('Invalid hsl color:', colorStr);
+    }
+  }
+  
+  // Handle common color names
+  const colorMap: Record<string, { r: number, g: number, b: number, a: number }> = {
+    'transparent': { r: 0, g: 0, b: 0, a: 0 },
+    'red': { r: 1, g: 0, b: 0, a: 1 },
+    'green': { r: 0, g: 0.8, b: 0, a: 1 },
+    'blue': { r: 0, g: 0, b: 1, a: 1 },
+    'black': { r: 0, g: 0, b: 0, a: 1 },
+    'white': { r: 1, g: 1, b: 1, a: 1 },
+    'gray': { r: 0.5, g: 0.5, b: 0.5, a: 1 },
+    'grey': { r: 0.5, g: 0.5, b: 0.5, a: 1 },
+    'yellow': { r: 1, g: 1, b: 0, a: 1 },
+    'purple': { r: 0.5, g: 0, b: 0.5, a: 1 },
+    'orange': { r: 1, g: 0.65, b: 0, a: 1 },
+    'pink': { r: 1, g: 0.75, b: 0.8, a: 1 },
+    // Material Design colors
+    'primary': { r: 0.12, g: 0.47, b: 0.71, a: 1 },
+    'secondary': { r: 0.91, g: 0.3, b: 0.24, a: 1 },
+    'success': { r: 0.3, g: 0.69, b: 0.31, a: 1 },
+    'warning': { r: 1, g: 0.76, b: 0.03, a: 1 },
+    'error': { r: 0.96, g: 0.26, b: 0.21, a: 1 },
+    'info': { r: 0.13, g: 0.59, b: 0.95, a: 1 }
+  };
+  
+  const lowerColorStr = colorStr.toLowerCase();
+  if (lowerColorStr in colorMap) {
+    return colorMap[lowerColorStr];
+  }
+  
+  console.warn('Unrecognized color format:', colorStr);
+  return { r: 0, g: 0, b: 0, a: 1 }; // Default to black
+}
+
+/**
+ * Applies extended styles to any node
+ */
+async function applyExtendedStyles(node: SceneNode, styles: ExtendedStyleOptions): Promise<void> {
+  try {
+    console.log(`Applying extended styles to ${node.name} (${node.type})`, styles);
+    
+    // Apply name if provided
+    if (styles.name) {
+      node.name = styles.name;
+    }
+    
+    // Apply positioning if needed and supported
+    if ('x' in node && styles.x !== undefined) {
+      node.x = styles.x;
+    }
+    
+    if ('y' in node && styles.y !== undefined) {
+      node.y = styles.y;
+    }
+    
+    // Apply sizing if needed and supported
+    if ('resize' in node) {
+      let width = 'width' in node ? node.width : undefined;
+      let height = 'height' in node ? node.height : undefined;
+      
+      if (styles.width !== undefined) {
+        width = styles.width;
+      }
+      
+      if (styles.height !== undefined) {
+        height = styles.height;
+      }
+      
+      if (width !== undefined && height !== undefined) {
+        (node as RectangleNode | FrameNode | ComponentNode | InstanceNode | TextNode | EllipseNode | PolygonNode | StarNode | VectorNode).resize(width, height);
+      }
+    }
+    
+    // Apply fills if supported
+    if ('fills' in node && styles.fill !== undefined) {
+      try {
+        if (typeof styles.fill === 'string' || ('r' in styles.fill && 'g' in styles.fill && 'b' in styles.fill)) {
+          // Simple color fill
+          const color = enhancedParseColor(styles.fill, styles.brandColors);
+          node.fills = [{
+            type: 'SOLID',
+            color: { r: color.r, g: color.g, b: color.b },
+            opacity: color.a
+          }];
+        } else if (Array.isArray(styles.fill)) {
+          // Multiple fills (gradients, images, etc.)
+          node.fills = styles.fill.map(fill => {
+            if (fill.type === 'SOLID' && fill.color) {
+              const color = enhancedParseColor(fill.color, styles.brandColors);
+              return {
+                type: 'SOLID',
+                color: { r: color.r, g: color.g, b: color.b },
+                opacity: fill.opacity !== undefined ? fill.opacity : color.a,
+                visible: fill.visible !== undefined ? fill.visible : true
+              };
+            }
+            return fill as Paint;
+          });
+        }
+      } catch (e) {
+        console.warn('Error applying fill:', e);
+      }
+    }
+    
+    // Apply strokes if supported
+    if ('strokes' in node && styles.stroke !== undefined) {
+      try {
+        const color = enhancedParseColor(styles.stroke, styles.brandColors);
+        node.strokes = [{
+          type: 'SOLID',
+          color: { r: color.r, g: color.g, b: color.b },
+          opacity: color.a
+        }];
+        
+        // Apply stroke weight if provided
+        if ('strokeWeight' in node && styles.strokeWeight !== undefined) {
+          node.strokeWeight = styles.strokeWeight;
+        }
+        
+        // Apply stroke alignment if provided
+        if ('strokeAlign' in node && styles.strokeAlign) {
+          node.strokeAlign = styles.strokeAlign;
+        }
+      } catch (e) {
+        console.warn('Error applying stroke:', e);
+      }
+    }
+    
+    // Apply corner radius if supported
+    if ('cornerRadius' in node && styles.cornerRadius !== undefined) {
+      try {
+        if (typeof styles.cornerRadius === 'number') {
+          // Uniform corner radius
+          (node as any).cornerRadius = styles.cornerRadius;
+        } else if (typeof styles.cornerRadius === 'object') {
+          // Check if node supports individual corner radii
+          if ('topLeftRadius' in node) {
+            // Apply individual corner radii for nodes that support it
+            if (styles.cornerRadius.topLeft !== undefined) {
+              (node as RectangleNode).topLeftRadius = styles.cornerRadius.topLeft;
+            }
+            if (styles.cornerRadius.topRight !== undefined) {
+              (node as RectangleNode).topRightRadius = styles.cornerRadius.topRight;
+            }
+            if (styles.cornerRadius.bottomRight !== undefined) {
+              (node as RectangleNode).bottomRightRadius = styles.cornerRadius.bottomRight;
+            }
+            if (styles.cornerRadius.bottomLeft !== undefined) {
+              (node as RectangleNode).bottomLeftRadius = styles.cornerRadius.bottomLeft;
+            }
+          } else {
+            // Fallback to uniform radius using average
+            const values = [
+              styles.cornerRadius.topLeft, 
+              styles.cornerRadius.topRight, 
+              styles.cornerRadius.bottomRight, 
+              styles.cornerRadius.bottomLeft
+            ].filter(v => v !== undefined) as number[];
+            
+            if (values.length > 0) {
+              const avg = values.reduce((sum, val) => sum + val, 0) / values.length;
+              (node as any).cornerRadius = avg;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Error applying corner radius:', e);
+      }
+    }
+    
+    // Apply effects if supported
+    if ('effects' in node && styles.effects && Array.isArray(styles.effects)) {
+      try {
+        node.effects = styles.effects.map(effect => {
+          // Convert color if present
+          if (effect.color) {
+            const parsedColor = enhancedParseColor(effect.color, styles.brandColors);
+            effect.color = {
+              r: parsedColor.r,
+              g: parsedColor.g,
+              b: parsedColor.b,
+              a: parsedColor.a
+            };
+          }
+          return effect as Effect;
+        });
+      } catch (e) {
+        console.warn('Error applying effects:', e);
+      }
+    }
+    
+    // Apply layout properties for container nodes
+    if ('layoutMode' in node) {
+      // Set layout mode if provided
+      if (styles.layoutMode) {
+        node.layoutMode = styles.layoutMode;
+        
+        // Only apply these if we've set a layout mode
+        if (styles.primaryAxisAlignItems) {
+          node.primaryAxisAlignItems = styles.primaryAxisAlignItems;
+        }
+        
+        if (styles.counterAxisAlignItems) {
+          node.counterAxisAlignItems = styles.counterAxisAlignItems;
+        }
+        
+        if (styles.itemSpacing !== undefined) {
+          node.itemSpacing = styles.itemSpacing;
+        }
+      }
+      
+      // Apply padding properties
+      if (styles.paddingLeft !== undefined) node.paddingLeft = styles.paddingLeft;
+      if (styles.paddingRight !== undefined) node.paddingRight = styles.paddingRight;
+      if (styles.paddingTop !== undefined) node.paddingTop = styles.paddingTop;
+      if (styles.paddingBottom !== undefined) node.paddingBottom = styles.paddingBottom;
+    }
+    
+    // Apply text-specific properties for text nodes
+    if (node.type === 'TEXT') {
+      const textNode = node as TextNode;
+      
+      // Load a font for any text modifications
+      // Default to Inter Regular if nothing specified
+      let fontName = textNode.fontName;
+      if (typeof fontName !== 'symbol') {
+        // Use provided font or default to Inter
+        const family = (styles.fontName && typeof styles.fontName !== 'symbol') 
+          ? styles.fontName.family 
+          : (fontName.family || 'Inter');
+          
+        // Use provided style or default to Regular
+        const style = (styles.fontName && typeof styles.fontName !== 'symbol')
+          ? styles.fontName.style
+          : (fontName.style || 'Regular');
+          
+        // If fontWeight is specified as a number, map it to a font style
+        if (styles.fontWeight !== undefined) {
+          let weightStyle = style; // Default to current style
+          
+          if (typeof styles.fontWeight === 'number') {
+            // Map numeric weights to font styles
+            if (styles.fontWeight <= 300) weightStyle = 'Light';
+            else if (styles.fontWeight <= 400) weightStyle = 'Regular';
+            else if (styles.fontWeight <= 500) weightStyle = 'Medium';
+            else if (styles.fontWeight <= 600) weightStyle = 'SemiBold';
+            else if (styles.fontWeight <= 700) weightStyle = 'Bold';
+            else if (styles.fontWeight <= 800) weightStyle = 'ExtraBold';
+            else weightStyle = 'Black';
+          } else if (typeof styles.fontWeight === 'string') {
+            weightStyle = styles.fontWeight;
+          }
+          
+          // Try to load the font with the weight style
+          try {
+            await figma.loadFontAsync({ family, style: weightStyle });
+            textNode.fontName = { family, style: weightStyle };
+          } catch (e) {
+            console.warn(`Font ${family} ${weightStyle} not available, trying Regular`);
+            await figma.loadFontAsync({ family, style: 'Regular' });
+            textNode.fontName = { family, style: 'Regular' };
+          }
+        } else {
+          // Otherwise just load the specified or current font
+          await figma.loadFontAsync({ family, style });
+          textNode.fontName = { family, style };
+        }
+      }
+      
+      // Apply text content if provided
+      if (styles.text || styles.characters || styles.content) {
+        textNode.characters = styles.text || styles.characters || styles.content || textNode.characters;
+      }
+      
+      // Apply font size if provided
+      if (styles.fontSize !== undefined) {
+        textNode.fontSize = styles.fontSize;
+      }
+      
+      // Apply text case if provided
+      if (styles.textCase) {
+        textNode.textCase = styles.textCase;
+      }
+      
+      // Apply text decoration if provided
+      if (styles.textDecoration) {
+        textNode.textDecoration = styles.textDecoration;
+      }
+      
+      // Apply letter spacing if provided
+      if (styles.letterSpacing) {
+        textNode.letterSpacing = styles.letterSpacing;
+      }
+      
+      // Apply line height if provided
+      if (styles.lineHeight) {
+        textNode.lineHeight = styles.lineHeight;
+      }
+      
+      // Apply text alignment if provided
+      if (styles.textAlignHorizontal) {
+        textNode.textAlignHorizontal = styles.textAlignHorizontal;
+      }
+      
+      if (styles.textAlignVertical) {
+        textNode.textAlignVertical = styles.textAlignVertical;
+      }
+    }
+    
+    // Apply children styles if this is a node with children
+    if ('children' in node && styles.children && Array.isArray(styles.children)) {
+      // This would handle nested style definitions
+      // Not implemented for this initial version
+    }
+    
+  } catch (e) {
+    console.error('Error applying extended styles:', e);
+  }
+}
+
+/**
+ * Applies container styles with enhanced options
+ */
+async function applyExtendedContainerStyles(
+  node: FrameNode | GroupNode | ComponentNode | InstanceNode, 
+  styles: ExtendedStyleOptions
+): Promise<void> {
+  await applyExtendedStyles(node, styles);
+}
+
+/**
+ * Applies shape styles with enhanced options
+ */
+async function applyExtendedShapeStyles(
+  node: RectangleNode | EllipseNode | PolygonNode | StarNode | VectorNode,
+  styles: ExtendedStyleOptions
+): Promise<void> {
+  await applyExtendedStyles(node, styles);
+}
+
+/**
+ * Applies text styles with enhanced options
+ */
+async function applyExtendedTextStyles(node: TextNode, styles: ExtendedStyleOptions): Promise<void> {
+  await applyExtendedStyles(node, styles);
+}
+
+/**
+ * Helper function to extract brand colors from text descriptions
+ */
+function extractBrandColors(description: string): {[key: string]: string} {
+  if (!description) return {};
+  
+  const brandColors: {[key: string]: string} = {};
+  
+  // Look for color definitions in the format (#NAME: #HEX)
+  const colorRegex = /#([A-Za-z0-9_]+):\s*(#[A-Fa-f0-9]{3,8}|rgba?\([^)]+\)|hsla?\([^)]+\))/g;
+  let match;
+  
+  while ((match = colorRegex.exec(description)) !== null) {
+    const [, name, value] = match;
+    brandColors[name.toLowerCase()] = value;
+  }
+  
+  // Also look for color names and hex codes in parentheses: NAME (#HEX)
+  const colorNameRegex = /([A-Za-z0-9_]+)\s*\((#[A-Fa-f0-9]{3,8}|rgba?\([^)]+\)|hsla?\([^)]+\))\)/g;
+  
+  while ((match = colorNameRegex.exec(description)) !== null) {
+    const [, name, value] = match;
+    brandColors[name.toLowerCase()] = value;
+  }
+  
+  // Look for explicit hex codes with names in common formats
+  const hexWithNameRegex = /(#[A-Fa-f0-9]{3,8})[,\s]+([\w\s]+)|(\w+)[,\s]+(#[A-Fa-f0-9]{3,8})/g;
+  
+  while ((match = hexWithNameRegex.exec(description)) !== null) {
+    const [, hex1, name1, name2, hex2] = match;
+    if (hex1 && name1) {
+      brandColors[name1.trim().toLowerCase().replace(/\s+/g, '_')] = hex1;
+    } else if (name2 && hex2) {
+      brandColors[name2.trim().toLowerCase().replace(/\s+/g, '_')] = hex2;
+    }
+  }
+  
+  // Regular expressions to capture color mentions like "primary color is blue"
+  const primaryColorRegex = /primary(?:\s+|-|_)?color(?:\s+is|\s*:|\s*=)?\s+([#]?[a-zA-Z0-9]+)/i;
+  const secondaryColorRegex = /secondary(?:\s+|-|_)?color(?:\s+is|\s*:|\s*=)?\s+([#]?[a-zA-Z0-9]+)/i;
+  const accentColorRegex = /accent(?:\s+|-|_)?color(?:\s+is|\s*:|\s*=)?\s+([#]?[a-zA-Z0-9]+)/i;
+  const backgroundColorRegex = /background(?:\s+|-|_)?color(?:\s+is|\s*:|\s*=)?\s+([#]?[a-zA-Z0-9]+)/i;
+  const textColorRegex = /text(?:\s+|-|_)?color(?:\s+is|\s*:|\s*=)?\s+([#]?[a-zA-Z0-9]+)/i;
+  
+  // Extract colors using regexes
+  const primaryMatch = description.match(primaryColorRegex);
+  if (primaryMatch && primaryMatch[1]) {
+    brandColors.primary = primaryMatch[1];
+  }
+  
+  const secondaryMatch = description.match(secondaryColorRegex);
+  if (secondaryMatch && secondaryMatch[1]) {
+    brandColors.secondary = secondaryMatch[1];
+  }
+  
+  const accentMatch = description.match(accentColorRegex);
+  if (accentMatch && accentMatch[1]) {
+    brandColors.accent = accentMatch[1];
+  }
+  
+  const backgroundMatch = description.match(backgroundColorRegex);
+  if (backgroundMatch && backgroundMatch[1]) {
+    brandColors.background = backgroundMatch[1];
+  }
+  
+  const textMatch = description.match(textColorRegex);
+  if (textMatch && textMatch[1]) {
+    brandColors.text = textMatch[1];
+  }
+  
+  // Named color regex (e.g., "use blue for buttons")
+  const namedColorRegex = /use\s+([a-zA-Z]+)\s+(?:for|as|in)\s+([a-zA-Z]+)/i;
+  
+  // Extract named color associations
+  const namedMatches = Array.from(description.matchAll(new RegExp(namedColorRegex, 'gi')));
+  for (const match of namedMatches) {
+    if (match[1] && match[2]) {
+      const color = match[1].toLowerCase();
+      const element = match[2].toLowerCase();
+      
+      if (isValidColorName(color)) {
+        // Map element types to color roles
+        if (['button', 'buttons', 'cta'].includes(element)) {
+          brandColors.primary = color;
+        } else if (['accent', 'highlight', 'highlights'].includes(element)) {
+          brandColors.accent = color;
+        } else if (['background', 'backgrounds', 'bg'].includes(element)) {
+          brandColors.background = color;
+        } else if (['text', 'font', 'typography'].includes(element)) {
+          brandColors.text = color;
+        } else {
+          // Store custom associations
+          brandColors[element] = color;
+        }
+      }
+    }
+  }
+  
+  // Branding mentions with specific colors
+  const brandingRegex = /(?:brand|branding|theme)\s+(?:is|with|using|in|of)\s+([a-zA-Z]+)/i;
+  const brandMatch = description.match(brandingRegex);
+  if (brandMatch && brandMatch[1]) {
+    const brandColor = brandMatch[1].toLowerCase();
+    if (isValidColorName(brandColor)) {
+      brandColors.primary = brandColor;
+      
+      // Generate complementary colors based on brand color
+      if (brandColor === 'blue') {
+        brandColors.secondary = 'lightblue';
+        brandColors.accent = 'navy';
+      } else if (brandColor === 'red') {
+        brandColors.secondary = 'pink';
+        brandColors.accent = 'darkred';
+      } else if (brandColor === 'green') {
+        brandColors.secondary = 'lightgreen';
+        brandColors.accent = 'darkgreen';
+      } else if (brandColor === 'purple') {
+        brandColors.secondary = 'lavender';
+        brandColors.accent = 'darkpurple';
+      }
+    }
+  }
+  
+  console.log('Extracted brand colors:', brandColors);
+  return brandColors;
+}
+
+/**
+ * Check if a string is a valid color name
+ */
+function isValidColorName(color: string): boolean {
+  const validColors = [
+    'red', 'green', 'blue', 'yellow', 'orange', 'purple', 'pink', 'brown', 'gray', 'grey',
+    'black', 'white', 'teal', 'cyan', 'magenta', 'lime', 'olive', 'navy', 'darkblue', 'lightblue',
+    'darkred', 'lightred', 'darkgreen', 'lightgreen', 'darkpurple', 'lavender'
+  ];
+  
+  return validColors.includes(color.toLowerCase());
+}
+
+/**
  * Creates a new wireframe based on the description and parameters
  */
 async function handleCreateWireframe(message: PluginMessage): Promise<void> {
@@ -297,183 +983,576 @@ function applyBaseStyle(frame: FrameNode, style: string = 'minimal', designSyste
  */
 async function handleAddElement(message: PluginMessage): Promise<void> {
   console.log('Message received for ADD_ELEMENT:', message);
+  
+  const { elementType, parent, properties } = message.payload;
   console.log('Add element payload:', message.payload);
   
-  // Validate payload exists
-  if (!message.payload) {
-    console.error('No payload provided for ADD_ELEMENT command');
-    throw new Error('No payload provided for ADD_ELEMENT command');
+  // Validation: ensure elementType is set
+  if (!elementType) {
+    throw new Error('Missing elementType in payload');
   }
-  
-  // Destructure with defaults to avoid errors
-  const { 
-    elementType = 'RECTANGLE', 
-    parent = null, // Default to null so we can use session state
-    properties = {} 
-  } = message.payload;
   
   console.log('Extracted values for ADD_ELEMENT:', { elementType, parent, properties });
   
-  // Get parent node based on prioritized logic:
-  // 1. Use provided parent ID if valid
-  // 2. Use active page from session if available
-  // 3. Fall back to current page
+  // Resolve parent node - in this priority:
+  // 1. Specified parent ID 
+  // 2. Current selection (if it's a frame or component)
+  // 3. Active page from session state
+  // 4. Current page
   
   let parentNode: BaseNode | null = null;
-  let parentSource = 'provided';
   
-  // Try to use provided parent first
+  // If parent ID is provided, try to get it
   if (parent) {
     parentNode = figma.getNodeById(parent);
-    if (!parentNode) {
-      console.warn(`Provided parent node ID ${parent} is invalid`);
-      parentSource = 'invalid';
+    console.log(`Parent node resolved to ${parent} (${parentNode?.type}) via provided`);
+  }
+  
+  // If no parent or parent not found, try to use current selection
+  if (!parentNode && figma.currentPage.selection.length > 0) {
+    const selectedNode = figma.currentPage.selection[0];
+    
+    // Only use if it's a frame, component, or instance
+    if (selectedNode.type === 'FRAME' || selectedNode.type === 'COMPONENT' || selectedNode.type === 'INSTANCE' || selectedNode.type === 'GROUP') {
+      parentNode = selectedNode;
+      console.log(`Parent node resolved to ${selectedNode.id} (${selectedNode.type}) via selection`);
     }
   }
   
-  // If no valid parent node yet, try active page from session
+  // If still no parent, try to use active page from session state
   if (!parentNode) {
     const activePageId = sessionState.getActivePageId();
     if (activePageId) {
       parentNode = figma.getNodeById(activePageId);
-      if (parentNode) {
-        parentSource = 'session';
-        console.log(`Using active page from session: ${activePageId}`);
-        
-        // Ensure we're on that page by making it current
-        if (parentNode.type === 'PAGE') {
-          figma.currentPage = parentNode as PageNode;
-        }
+      if (parentNode && parentNode.type === 'PAGE') {
+        console.log(`Parent node resolved to ${activePageId} (PAGE) via session state`);
+      } else {
+        parentNode = null;
       }
     }
   }
   
-  // If still no valid parent, use current page
+  // Final fallback to current page
   if (!parentNode) {
     parentNode = figma.currentPage;
-    parentSource = 'current';
-    console.log(`Using current page as parent: ${parentNode.id}`);
+    console.log('Parent node resolved to current page as fallback');
   }
   
-  // Log parent resolution
-  console.log(`Parent node resolved to ${parentNode.id} (${parentNode.type}) via ${parentSource}`);
+  // Check if the parent node is valid - it must be one of these types
+  const validParentTypes = ['PAGE', 'FRAME', 'COMPONENT', 'INSTANCE', 'GROUP'];
+  if (!validParentTypes.includes(parentNode.type)) {
+    throw new Error(`Invalid parent node type: ${parentNode.type}. Must be one of: ${validParentTypes.join(', ')}`);
+  }
   
-  // Create the element
-  let element: BaseNode | null = null;
+  // Cast to more specific types
+  let parentPage: PageNode;
+  let parentFrame: FrameNode | ComponentNode | InstanceNode | null = null;
+  
+  if (parentNode.type === 'PAGE') {
+    parentPage = parentNode as PageNode;
+  } else {
+    // Navigate up the tree to find the parent page
+    let currentNode: BaseNode = parentNode;
+    while (currentNode && currentNode.type !== 'PAGE') {
+      currentNode = currentNode.parent!;
+    }
+    parentPage = currentNode as PageNode;
+    
+    // The direct parent is a frame, component, or instance
+    if (parentNode.type === 'FRAME' || parentNode.type === 'COMPONENT' || parentNode.type === 'INSTANCE') {
+      parentFrame = parentNode as FrameNode | ComponentNode | InstanceNode;
+    }
+  }
+  
+  // Make sure the page containing the parent is the current page
+  if (parentPage.id !== figma.currentPage.id) {
+    figma.currentPage = parentPage;
+    console.log(`Switched to page ${parentPage.id} to create element`);
+  }
+  
+  let createdNode: SceneNode | null = null;
   
   try {
-    // Handle different parent types
-    if (parentNode.type === 'PAGE') {
-      // If parent is a page, create the element directly on the page
-      const page = parentNode as PageNode;
-      
-      if (elementType === 'TEXT') {
-        element = figma.createText();
-        page.appendChild(element);
-        if (properties.name) element.name = properties.name;
-        
-        // Load font before setting characters
-        await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-        
-        if (properties.content || properties.text) {
-          element.characters = properties.content || properties.text || 'Text';
+    // Create the element based on type
+  switch (elementType) {
+      case 'TEXT': {
+        // Create text element
+        if (parentFrame) {
+          createdNode = await createTextElement(parentFrame, properties);
+        } else {
+          const frame = figma.createFrame();
+          frame.name = properties.name || 'Text Container';
+          parentPage.appendChild(frame);
+          createdNode = await createTextElement(frame, properties);
         }
-      } else if (elementType === 'RECTANGLE') {
-        element = figma.createRectangle();
-        page.appendChild(element);
-        if (properties.name) element.name = properties.name;
-        if (properties.width && properties.height) {
-          element.resize(properties.width, properties.height);
-        }
-      } else {
-        // For other types, try to use appropriate creation function or fallback to frame
-        switch (elementType) {
-          case 'BUTTON':
-            element = await createButtonOnPage(page, properties);
-            break;
-          case 'INPUT':
-            element = await createInputOnPage(page, properties);
-            break;
-          case 'FRAME':
-            element = figma.createFrame();
-            page.appendChild(element);
-            element.name = properties.name || 'Frame';
-            break;
-          default:
-            // Fallback for unsupported types
-            element = figma.createFrame();
-            page.appendChild(element);
-            element.name = `${elementType} (fallback)`;
-            break;
-        }
+      break;
       }
-    } else if (parentNode.type === 'FRAME' || parentNode.type === 'GROUP' || 
-               parentNode.type === 'COMPONENT' || parentNode.type === 'INSTANCE') {
-      // If parent is a container node, use our existing creation functions
-      const container = parentNode as FrameNode | GroupNode | ComponentNode | InstanceNode;
-      
-      switch (elementType) {
-        case 'TEXT':
-          element = await createTextElement(container, properties);
-          break;
-        case 'RECTANGLE':
-          element = createRectangleElement(container, properties);
-          break;
-        case 'BUTTON':
-          element = await createButtonElement(container, properties);
-          break;
-        case 'INPUT':
-          element = await createInputElement(container, properties);
-          break;
-        case 'FRAME':
-          element = createFrameElement(container, properties);
-          break;
-        case 'NAVBAR':
-          element = await createNavbarElement(container, properties);
-          break;
-        case 'CARD':
-          element = await createCardElement(container, properties);
-          break;
-        case 'FOOTER':
-          element = await createFooterElement(container, properties);
-          break;
-        default:
-          console.warn(`Unsupported element type: ${elementType}, creating rectangle instead`);
-          element = createRectangleElement(container, {
-            ...properties,
-            name: `${elementType} (fallback)`
-          });
+        
+      case 'BUTTON': {
+        if (parentFrame) {
+          createdNode = await createButtonElement(parentFrame, properties);
+        } else {
+          createdNode = await createButtonOnPage(parentPage, properties);
+        }
+      break;
       }
-    } else {
-      // For other parent types, fallback to current page
-      console.warn(`Unsupported parent type: ${parentNode.type}, using current page instead`);
-      const page = figma.currentPage;
-      element = figma.createRectangle();
-      page.appendChild(element);
-      element.name = properties.name || `${elementType} (fallback)`;
+        
+      case 'INPUT': {
+        if (parentFrame) {
+          createdNode = await createInputElement(parentFrame, properties);
+        } else {
+          createdNode = await createInputOnPage(parentPage, properties);
+        }
+      break;
+      }
+        
+      case 'FRAME': {
+        if (parentFrame) {
+          createdNode = createFrameElement(parentFrame, properties);
+        } else {
+          // Create directly on page
+          const frame = figma.createFrame();
+          
+          // Apply name if provided
+          frame.name = properties.name || 'Frame';
+          
+          // Set position and size if provided
+          if (properties.position) {
+            if (properties.position.x !== undefined) frame.x = properties.position.x;
+            if (properties.position.y !== undefined) frame.y = properties.position.y;
+            if (properties.position.width !== undefined) frame.resize(properties.position.width, frame.height);
+            if (properties.position.height !== undefined) frame.resize(frame.width, properties.position.height);
+          } else {
+            // Default position
+            frame.x = 0;
+            frame.y = 0;
+            frame.resize(400, 300);
+          }
+          
+          // Add some content based on description
+          if (properties.text || properties.content) {
+            const text = figma.createText();
+            text.characters = properties.text || properties.content;
+            frame.appendChild(text);
+            text.x = 16;
+            text.y = 16;
+          }
+          
+          // Apply any specific styles
+          if (properties.styles) {
+            applyContainerStyles(frame, properties.styles);
+          }
+          
+          parentPage.appendChild(frame);
+          createdNode = frame;
+        }
+      break;
+      }
+        
+      case 'CARD': {
+        if (parentFrame) {
+          createdNode = await createCardElement(parentFrame, properties);
+        } else {
+          // Create on page
+          const card = figma.createFrame();
+          card.name = properties.name || 'Card';
+          
+          // Set position and size if provided
+          if (properties.position) {
+            if (properties.position.x !== undefined) card.x = properties.position.x;
+            if (properties.position.y !== undefined) card.y = properties.position.y;
+            if (properties.position.width !== undefined) card.resize(properties.position.width, card.height);
+            if (properties.position.height !== undefined) card.resize(card.width, properties.position.height);
+          } else {
+            card.resize(300, 200);
+          }
+          
+          // Add text content
+          const cardTitle = figma.createText();
+          cardTitle.characters = "Card Title";
+          cardTitle.x = 16;
+          cardTitle.y = 16;
+          card.appendChild(cardTitle);
+          
+          // Add description if provided
+          if (properties.text || properties.content) {
+            const cardDesc = figma.createText();
+            cardDesc.characters = properties.text || properties.content;
+            cardDesc.x = 16;
+            cardDesc.y = 48;
+            card.appendChild(cardDesc);
+          }
+          
+          // Apply styles
+          card.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
+          card.cornerRadius = 8;
+          card.strokeWeight = 1;
+          card.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
+          
+          // Apply any specific styles
+          if (properties.styles) {
+            applyContainerStyles(card, properties.styles);
+          }
+          
+          parentPage.appendChild(card);
+          createdNode = card;
+        }
+      break;
+      }
+        
+      case 'NAVBAR': {
+        if (parentFrame) {
+          createdNode = await createNavbarElement(parentFrame, properties);
+        } else {
+          // Create a navbar at the top of the page
+          const navbar = figma.createFrame();
+          navbar.name = properties.name || 'Navigation Bar';
+          
+          // Set position and size
+          if (properties.position) {
+            if (properties.position.x !== undefined) navbar.x = properties.position.x;
+            if (properties.position.y !== undefined) navbar.y = properties.position.y;
+            if (properties.position.width !== undefined) navbar.resize(properties.position.width, navbar.height);
+            if (properties.position.height !== undefined) navbar.resize(navbar.width, properties.position.height);
+          } else {
+            navbar.resize(800, 64);
+            navbar.x = 0;
+            navbar.y = 0;
+          }
+          
+          // Set layout
+          navbar.layoutMode = 'HORIZONTAL';
+          navbar.primaryAxisAlignItems = 'SPACE_BETWEEN';
+          navbar.counterAxisAlignItems = 'CENTER';
+          navbar.paddingLeft = 16;
+          navbar.paddingRight = 16;
+          
+          // Add logo
+          const logo = figma.createText();
+          logo.characters = 'Logo';
+          logo.fontSize = 20;
+          logo.setRangeFontName(0, logo.characters.length, { family: "Inter", style: "Bold" });
+          
+          // Add navigation links
+          const navLinks = figma.createFrame();
+          navLinks.name = 'Nav Links';
+          navLinks.layoutMode = 'HORIZONTAL';
+          navLinks.itemSpacing = 24;
+          navLinks.fills = [];
+          
+          // Add some default links
+          const link1 = figma.createText();
+          link1.characters = 'Home';
+          navLinks.appendChild(link1);
+          
+          const link2 = figma.createText();
+          link2.characters = 'About';
+          navLinks.appendChild(link2);
+          
+          const link3 = figma.createText();
+          link3.characters = 'Contact';
+          navLinks.appendChild(link3);
+          
+          // Add components to navbar
+          navbar.appendChild(logo);
+          navbar.appendChild(navLinks);
+          
+          // Apply styling
+          navbar.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
+          navbar.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
+          navbar.strokeWeight = 1;
+          navbar.strokeAlign = 'INSIDE';
+          
+          // Apply any specific styles
+          if (properties.styles) {
+            applyContainerStyles(navbar, properties.styles);
+          }
+          
+          parentPage.appendChild(navbar);
+          createdNode = navbar;
+        }
+      break;
+      }
+      
+      case 'RECTANGLE': {
+        let rect: RectangleNode;
+        
+        if (parentFrame) {
+          rect = createRectangleElement(parentFrame, properties);
+        } else {
+          // Create directly on page
+          rect = figma.createRectangle();
+          rect.name = properties.name || 'Rectangle';
+          
+          // Set position and size
+          if (properties.position) {
+            if (properties.position.x !== undefined) rect.x = properties.position.x;
+            if (properties.position.y !== undefined) rect.y = properties.position.y;
+            if (properties.position.width !== undefined) rect.resize(properties.position.width, rect.height);
+            if (properties.position.height !== undefined) rect.resize(rect.width, properties.position.height);
+          } else {
+            rect.resize(100, 100);
+          }
+          
+          // Apply basic styling
+          rect.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
+          
+          // Apply specific styles if provided
+          if (properties.styles) {
+            applyShapeStyles(rect, properties.styles);
+          }
+          
+          parentPage.appendChild(rect);
+        }
+        
+        createdNode = rect;
+      break;
+      }
+      
+      case 'CUSTOM': {
+        // For custom elements, create a frame and add text content
+        const frame = figma.createFrame();
+        frame.name = properties.name || 'Custom Element';
+        
+        // Set position and size
+        if (properties.position) {
+          if (properties.position.x !== undefined) frame.x = properties.position.x;
+          if (properties.position.y !== undefined) frame.y = properties.position.y;
+          if (properties.position.width !== undefined) frame.resize(properties.position.width, frame.height);
+          if (properties.position.height !== undefined) frame.resize(frame.width, properties.position.height);
+        } else {
+          frame.resize(400, 300);
+        }
+        
+        // Add text content with the description
+        if (properties.text || properties.content) {
+          const text = figma.createText();
+          text.characters = properties.text || properties.content;
+          frame.appendChild(text);
+          text.x = 16;
+          text.y = 16;
+          
+          // Try to fit the text
+          text.resize(frame.width - 32, text.height);
+        }
+        
+        // Apply styles
+        if (properties.style === 'minimal') {
+          frame.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
+          frame.strokeWeight = 1;
+          frame.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
+        } else {
+          frame.fills = [{ type: 'SOLID', color: { r: 0.98, g: 0.98, b: 0.98 }, opacity: 1 }];
+          frame.cornerRadius = 8;
+          frame.strokeWeight = 1;
+          frame.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
+          
+          // Add a subtle shadow
+          frame.effects = [
+            {
+              type: 'DROP_SHADOW',
+              color: { r: 0, g: 0, b: 0, a: 0.1 },
+              offset: { x: 0, y: 2 },
+              radius: 4,
+              visible: true,
+              blendMode: 'NORMAL'
+            }
+          ];
+        }
+        
+        // Apply any specific styles
+        if (properties.styles) {
+          applyContainerStyles(frame, properties.styles);
+        }
+        
+        // Attach to parent
+        if (parentFrame) {
+          parentFrame.appendChild(frame);
+        } else {
+          parentPage.appendChild(frame);
+        }
+        
+        createdNode = frame;
+      break;
+      }
+      
+      case 'FORM': {
+        // Create a form container frame
+        const form = figma.createFrame();
+        form.name = properties.name || 'Form';
+        
+        // Set position and size
+        if (properties.position) {
+          if (properties.position.x !== undefined) form.x = properties.position.x;
+          if (properties.position.y !== undefined) form.y = properties.position.y;
+          if (properties.position.width !== undefined) form.resize(properties.position.width, form.height);
+          if (properties.position.height !== undefined) form.resize(form.width, properties.position.height);
+        } else {
+          form.resize(400, 400);
+        }
+        
+        // Set layout
+        form.layoutMode = 'VERTICAL';
+        form.itemSpacing = 16;
+        form.paddingLeft = 24;
+        form.paddingRight = 24;
+        form.paddingTop = 24;
+        form.paddingBottom = 24;
+        
+        // Add title
+        const title = figma.createText();
+        title.characters = 'Form Title';
+        title.fontSize = 20;
+        title.setRangeFontName(0, title.characters.length, { family: "Inter", style: "SemiBold" });
+        form.appendChild(title);
+        
+        // Add form description
+        if (properties.text || properties.content) {
+          const desc = figma.createText();
+          desc.characters = properties.text || properties.content || 'Form description';
+          form.appendChild(desc);
+        }
+        
+        // Add form fields - name, email, message
+        for (const fieldName of ['Name', 'Email', 'Message']) {
+          // Create field container
+          const fieldContainer = figma.createFrame();
+          fieldContainer.name = `${fieldName} Field`;
+          fieldContainer.layoutMode = 'VERTICAL';
+          fieldContainer.itemSpacing = 8;
+          fieldContainer.fills = [];
+          
+          // Add label
+          const label = figma.createText();
+          label.characters = fieldName;
+          label.fontSize = 14;
+          label.setRangeFontName(0, label.characters.length, { family: "Inter", style: "Medium" });
+          fieldContainer.appendChild(label);
+          
+          // Add input
+          const input = figma.createFrame();
+          input.name = `${fieldName} Input`;
+          input.resize(form.width - 48, 40);
+          input.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
+          input.strokes = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 }, opacity: 1 }];
+          input.strokeWeight = 1;
+          input.cornerRadius = 4;
+          
+          // For message field, make it taller
+          if (fieldName === 'Message') {
+            input.resize(input.width, 120);
+          }
+          
+          fieldContainer.appendChild(input);
+          form.appendChild(fieldContainer);
+        }
+        
+        // Add submit button
+        const button = figma.createFrame();
+        button.name = 'Submit Button';
+        button.resize(120, 40);
+        button.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.9 }, opacity: 1 }];
+        button.cornerRadius = 4;
+        
+        // Add button text
+        const buttonText = figma.createText();
+        buttonText.characters = 'Submit';
+        buttonText.fontSize = 16;
+        buttonText.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
+        button.appendChild(buttonText);
+        
+        // Center text in button
+        buttonText.x = (button.width - buttonText.width) / 2;
+        buttonText.y = (button.height - buttonText.height) / 2;
+        
+        form.appendChild(button);
+        
+        // Apply form styling
+        form.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
+        form.cornerRadius = 8;
+        form.strokeWeight = 1;
+        form.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
+        
+        // Apply any specific styles
+        if (properties.styles) {
+          applyContainerStyles(form, properties.styles);
+        }
+        
+        // Attach to parent
+        if (parentFrame) {
+          parentFrame.appendChild(form);
+        } else {
+          parentPage.appendChild(form);
+        }
+        
+        createdNode = form;
+        break;
+      }
+      
+    default:
+      throw new Error(`Unsupported element type: ${elementType}`);
+  }
+  
+    // Check if we successfully created a node
+    if (!createdNode) {
+      throw new Error(`Failed to create element of type: ${elementType}`);
     }
-  } catch (error) {
-    console.error('Error creating element:', error);
-    throw new Error(`Failed to create ${elementType}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  
-  if (!element) {
-    throw new Error(`Failed to create ${elementType}: Unknown error`);
-  }
-  
-  // Send success response with context
+    
+    // Apply layout positioning if specified
+    if (parentFrame && properties.layoutPosition && parentFrame.layoutMode !== 'NONE') {
+      switch (properties.layoutPosition) {
+        case 'top':
+          // Try to place at the top of the parent frame
+          createdNode.layoutPositioning = 'ABSOLUTE';
+          createdNode.y = parentFrame.paddingTop || 0;
+          break;
+        case 'bottom':
+          // Try to place at the bottom of the parent frame
+          createdNode.layoutPositioning = 'ABSOLUTE';
+          createdNode.y = parentFrame.height - createdNode.height - (parentFrame.paddingBottom || 0);
+          break;
+        case 'left':
+          // Try to place at the left of the parent frame
+          createdNode.layoutPositioning = 'ABSOLUTE';
+          createdNode.x = parentFrame.paddingLeft || 0;
+          break;
+        case 'right':
+          // Try to place at the right of the parent frame
+          createdNode.layoutPositioning = 'ABSOLUTE';
+          createdNode.x = parentFrame.width - createdNode.width - (parentFrame.paddingRight || 0);
+          break;
+        case 'center':
+          // Try to center in the parent frame
+          createdNode.layoutPositioning = 'ABSOLUTE';
+          createdNode.x = (parentFrame.width - createdNode.width) / 2;
+          createdNode.y = (parentFrame.height - createdNode.height) / 2;
+          break;
+      }
+    }
+    
+    // Send success response with the created node details
   sendResponse({
     type: message.type,
     success: true,
-    data: {
-      id: element.id,
-      type: element.type,
-      parentId: parentNode.id,
-      parentType: parentNode.type,
-      activePageId: sessionState.getActivePageId()
-    },
+      data: {
+        id: createdNode.id,
+        type: createdNode.type,
+        name: createdNode.name,
+        parentId: parentNode.id,
+        parentType: parentNode.type,
+        activePageId: figma.currentPage.id
+      },
+      id: message.id
+    });
+  } catch (error) {
+    console.error('Error in handleAddElement:', error);
+    sendResponse({
+      type: message.type,
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
     id: message.id
   });
+  }
 }
 
 /**
@@ -811,80 +1890,6 @@ async function createCardElement(parent: FrameNode | GroupNode | ComponentNode |
 }
 
 /**
- * Creates a footer element with the specified properties
- */
-async function createFooterElement(parent: FrameNode | GroupNode | ComponentNode | InstanceNode, properties: any): Promise<FrameNode> {
-  const footer = figma.createFrame();
-  footer.name = properties.name || 'Footer';
-  parent.appendChild(footer);
-  
-  // Apply basic properties
-  if (properties.x !== undefined) footer.x = properties.x;
-  if (properties.y !== undefined) footer.y = properties.y;
-  
-  // Set footer size - typically full width and fixed height
-  const width = properties.width || parent.width;
-  const height = properties.height || 200;
-  footer.resize(width, height);
-  
-  // Setup auto layout
-  footer.layoutMode = 'VERTICAL';
-  footer.primaryAxisAlignItems = 'CENTER';
-  footer.counterAxisAlignItems = 'CENTER';
-  footer.paddingTop = 40;
-  footer.paddingBottom = 40;
-  
-  // Load font before creating text elements
-  await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-  
-  // Create columns container if needed
-  if (properties.columns && properties.columns.length > 0) {
-    const columnsContainer = figma.createFrame();
-    footer.appendChild(columnsContainer);
-    columnsContainer.name = 'Columns';
-    columnsContainer.layoutMode = 'HORIZONTAL';
-    columnsContainer.itemSpacing = 48;
-    columnsContainer.fills = [];
-    columnsContainer.resize(width - 80, 120);
-    
-    // Create columns
-    for (const column of properties.columns) {
-      const columnFrame = figma.createFrame();
-      columnsContainer.appendChild(columnFrame);
-      columnFrame.name = column.title || 'Column';
-      columnFrame.layoutMode = 'VERTICAL';
-      columnFrame.itemSpacing = 12;
-      columnFrame.fills = [];
-      
-      // Add column title
-      if (column.title) {
-        const titleText = figma.createText();
-        columnFrame.appendChild(titleText);
-        titleText.characters = column.title;
-      }
-      
-      // Add links
-      if (column.links && column.links.length > 0) {
-        for (const link of column.links) {
-          const linkText = figma.createText();
-          columnFrame.appendChild(linkText);
-          linkText.characters = link.text;
-        }
-      }
-    }
-  }
-  
-  // Create copyright text if needed
-  if (properties.copyright) {
-    const copyrightText = figma.createText();
-    footer.appendChild(copyrightText);
-    copyrightText.characters = properties.copyright;
-  }
-  
-  return footer;
-}
-
-/**
  * Applies styling to an existing element
  */
 async function handleStyleElement(message: PluginMessage): Promise<void> {
@@ -1173,7 +2178,6 @@ function parseColor(colorStr: string): { r: number, g: number, b: number } {
       }
     } catch (e) {
       console.warn('Invalid hex color:', colorStr);
-      return defaultColor;
     }
   }
   
@@ -1189,7 +2193,6 @@ function parseColor(colorStr: string): { r: number, g: number, b: number } {
       }
     } catch (e) {
       console.warn('Invalid rgb color:', colorStr);
-      return defaultColor;
     }
   }
   
@@ -1371,44 +2374,44 @@ async function handleExportDesign(message: PluginMessage): Promise<void> {
   console.log(`Found ${nodesToExport.length} nodes to export`);
   
   try {
-    // Export each node
-    const exportPromises = nodesToExport.map(async node => {
+  // Export each node
+  const exportPromises = nodesToExport.map(async node => {
       console.log(`Exporting node: ${node.id} (${node.name})`);
       
-      const format = settings.format || 'PNG';
-      const scale = settings.constraint?.value || 1;
-      
-      // Export the node
-      const bytes = await (node as ExportMixin).exportAsync({
-        format: format as 'PNG' | 'JPG' | 'SVG' | 'PDF',
-        constraint: { type: 'SCALE', value: scale }
-      });
-      
-      // Convert to base64
-      const base64 = figma.base64Encode(bytes);
-      
-      return {
-        name: node.name,
-        data: base64,
-        format: format.toLowerCase(),
-        nodeId: node.id
-      };
+    const format = settings.format || 'PNG';
+    const scale = settings.constraint?.value || 1;
+    
+    // Export the node
+    const bytes = await (node as ExportMixin).exportAsync({
+      format: format as 'PNG' | 'JPG' | 'SVG' | 'PDF',
+      constraint: { type: 'SCALE', value: scale }
     });
     
-    // Wait for all exports to complete
-    const exportResults = await Promise.all(exportPromises);
-    console.log(`Successfully exported ${exportResults.length} nodes`);
+    // Convert to base64
+    const base64 = figma.base64Encode(bytes);
     
+    return {
+      name: node.name,
+      data: base64,
+      format: format.toLowerCase(),
+      nodeId: node.id
+    };
+  });
+  
+  // Wait for all exports to complete
+  const exportResults = await Promise.all(exportPromises);
+    console.log(`Successfully exported ${exportResults.length} nodes`);
+  
     // Send success response with context
-    sendResponse({
-      type: message.type,
-      success: true,
-      data: {
+  sendResponse({
+    type: message.type,
+    success: true,
+    data: {
         files: exportResults,
         activePageId: sessionState.getActivePageId()
-      },
-      id: message.id
-    });
+    },
+    id: message.id
+  });
   } catch (error) {
     console.error('Error exporting design:', error);
     throw new Error(`Export failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1433,18 +2436,18 @@ function handleGetSelection(message: PluginMessage): void {
       }
     }
     
-    const selection = figma.currentPage.selection.map(node => ({
-      id: node.id,
-      name: node.name,
-      type: node.type
-    }));
-    
+  const selection = figma.currentPage.selection.map(node => ({
+    id: node.id,
+    name: node.name,
+    type: node.type
+  }));
+  
     console.log(`Found ${selection.length} selected nodes`);
     
     // Send success response with context
-    sendResponse({
-      type: message.type,
-      success: true,
+  sendResponse({
+    type: message.type,
+    success: true,
       data: {
         selection,
         currentPage: {
@@ -1461,8 +2464,8 @@ function handleGetSelection(message: PluginMessage): void {
       type: message.type,
       success: false,
       error: `Error getting selection: ${error instanceof Error ? error.message : String(error)}`,
-      id: message.id
-    });
+    id: message.id
+  });
   }
 }
 
@@ -1503,9 +2506,9 @@ function handleGetCurrentPage(message: PluginMessage): void {
     const wireframes = sessionState.getWireframes();
     
     // Send response with detailed page context
-    sendResponse({
-      type: message.type,
-      success: true,
+  sendResponse({
+    type: message.type,
+    success: true,
       data: {
         // Current Figma page
         currentPage: {
@@ -1536,8 +2539,8 @@ function handleGetCurrentPage(message: PluginMessage): void {
       type: message.type,
       success: false,
       error: `Error getting page info: ${error instanceof Error ? error.message : String(error)}`,
-      id: message.id
-    });
+    id: message.id
+  });
   }
 }
 
@@ -1548,7 +2551,7 @@ figma.showUI(__html__, {
   visible: true // Make UI visible by default in real mode
 });
 
-console.log('Figma plugin initialized and ready for commands');
+console.log('Figma plugin initialized and ready for commands'); 
 
 // Send a startup notification to the UI
 figma.ui.postMessage({

@@ -18,7 +18,8 @@ import {
   getCurrentSelection, 
   getCurrentPage,
   PluginCommand,
-  PluginResponse
+  PluginResponse,
+  getPluginBridge
 } from "./plugin-bridge.js";
 import { initializePluginBridge } from "./plugin-bridge.js";
 import * as path from 'path';
@@ -708,28 +709,39 @@ async function generateFigmaDesign(
     
     // After creating the wireframe, populate each page with appropriate elements
     if (response.data?.pageIds && response.data.pageIds.length > 0) {
-      // Add elements to pages based on design type
-      // We'll use the first page to add a header
-      try {
-        const firstPageId = response.data.pageIds[0];
-        logger.debug('Adding components to first page', { firstPageId });
-        
-        await createFigmaComponent('navbar', `${type} navigation`, style, firstPageId);
-        
-        // For website or dashboard, add a hero section
-        if (type === 'website' || type === 'dashboard') {
-          await createFigmaComponent('frame', `Hero section for ${prompt}`, style, firstPageId);
+      // Break down the prompt into individual UI elements to create
+      const firstPageId = response.data.pageIds[0];
+      logger.debug('Breaking down prompt into elements', { firstPageId, prompt });
+      
+      // Parse the prompt to determine what UI elements to create
+      const elementsToCreate = breakDownPromptIntoElements(prompt, type, style);
+      
+      // Create each element in sequence
+      for (const element of elementsToCreate) {
+        try {
+          logger.debug(`Creating element: ${element.type}`, element);
+          
+          await createFigmaComponent(
+            element.type,
+            element.description,
+            style,
+            firstPageId
+          );
+          
+          // Small delay to allow Figma to process each element
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+        } catch (elemError) {
+          logger.warn(
+            `Failed to create element: ${element.type}`,
+            { element },
+            elemError as Error
+          );
+          // Continue despite element creation errors
         }
-        
-        logger.info('Added initial components to design');
-      } catch (elemError) {
-        logger.warn(
-          'Created wireframe but failed to add elements',
-          { designContext: response.data },  // Context object as second parameter
-          elemError as Error  // Error as third parameter
-        );
-        // Continue despite element creation errors
       }
+      
+      logger.info('Added all components to design');
     }
     
     return response.data?.wireframeId || response.data?.pageIds?.[0] || 'unknown-id';
@@ -737,6 +749,588 @@ async function generateFigmaDesign(
     logger.error('Error generating design', error as Error, { prompt, type });
     throw error;
   }
+}
+
+// Helper function to break down a prompt into specific UI elements
+function breakDownPromptIntoElements(prompt: string, type: string, style: string): Array<{
+  type: string, 
+  description: string,
+  position?: {x: number, y: number, width?: number, height?: number},
+  parentType?: string,
+  childOf?: string,
+  layoutPosition?: 'top' | 'bottom' | 'left' | 'right' | 'center',
+  styles?: {[key: string]: any}
+}> {
+  const elements: Array<{
+    type: string, 
+    description: string,
+    position?: {x: number, y: number, width?: number, height?: number},
+    parentType?: string,
+    childOf?: string,
+    layoutPosition?: 'top' | 'bottom' | 'left' | 'right' | 'center',
+    styles?: {[key: string]: any}
+  }> = [];
+  
+  // Track rootContainer to use as parent for child elements
+  let rootContainer = '';
+  let currentY = 0;
+  const defaultMargin = 24;
+  const containerWidth = type === 'mobile app' ? 375 : 1200;
+  const pageWidth = type === 'mobile app' ? 375 : 1440;
+  
+  // Default elements based on design type
+  if (type === 'website' || type === 'landing page') {
+    // Create main container first
+    rootContainer = 'main-container';
+    elements.push({
+      type: 'frame',
+      description: `Main ${type} layout container`,
+      position: { 
+        x: (pageWidth - containerWidth) / 2, 
+        y: 0, 
+        width: containerWidth, 
+        height: 2000 // We'll adjust this based on content
+      },
+      styles: {
+        fill: "#FFFFFF",
+        cornerRadius: 0,
+        layout: "VERTICAL",
+        itemSpacing: 48,
+        paddingTop: 0,
+        paddingBottom: 64,
+        paddingLeft: 0,
+        paddingRight: 0
+      }
+    });
+    
+    currentY = 0;
+    
+    // Always add header/navbar first
+    elements.push({
+      type: 'navbar',
+      description: `Navigation bar for ${type} with logo, links, and call to action`,
+      position: { x: 0, y: currentY, width: containerWidth, height: 80 },
+      childOf: rootContainer,
+      layoutPosition: 'top',
+      styles: {
+        fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
+        layout: "HORIZONTAL",
+        itemSpacing: 24,
+        paddingLeft: 24,
+        paddingRight: 24,
+        paddingTop: 16,
+        paddingBottom: 16,
+        justifyContent: "SPACE_BETWEEN"
+      }
+    });
+    
+    currentY += 80 + defaultMargin;
+    
+    // Check for specific sections in the prompt
+    if (prompt.toLowerCase().includes('hero') || !prompt.toLowerCase().includes('section')) {
+      elements.push({
+        type: 'frame',
+        description: `Hero section with headline, subheading, and main CTA button`,
+        position: { x: 0, y: currentY, width: containerWidth, height: 400 },
+        childOf: rootContainer,
+        layoutPosition: 'top',
+        styles: {
+          fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
+          cornerRadius: 8,
+          layout: "VERTICAL",
+          itemSpacing: 24,
+          paddingTop: 64,
+          paddingBottom: 64,
+          paddingLeft: 24,
+          paddingRight: 24,
+          justifyContent: "CENTER",
+          alignItems: "CENTER"
+        }
+      });
+      
+      currentY += 400 + defaultMargin;
+    }
+    
+    if (prompt.toLowerCase().includes('feature') || prompt.toLowerCase().includes('product')) {
+      elements.push({
+        type: 'frame',
+        description: `Features section with 3 columns of feature highlights`,
+        position: { x: 0, y: currentY, width: containerWidth, height: 400 },
+        childOf: rootContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: "#FFFFFF",
+          layout: "VERTICAL",
+          itemSpacing: 32,
+          paddingTop: 64,
+          paddingBottom: 64,
+          paddingLeft: 24,
+          paddingRight: 24
+        }
+      });
+      
+      currentY += 400 + defaultMargin;
+    }
+    
+    if (prompt.toLowerCase().includes('pricing')) {
+      elements.push({
+        type: 'frame',
+        description: `Pricing section with 3 pricing tiers in card layout`,
+        position: { x: 0, y: currentY, width: containerWidth, height: 500 },
+        childOf: rootContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
+          layout: "VERTICAL",
+          itemSpacing: 32,
+          paddingTop: 64,
+          paddingBottom: 64,
+          paddingLeft: 24,
+          paddingRight: 24
+        }
+      });
+      
+      currentY += 500 + defaultMargin;
+    }
+    
+    if (prompt.toLowerCase().includes('testimonial') || prompt.toLowerCase().includes('review')) {
+      elements.push({
+        type: 'frame',
+        description: `Testimonials section with customer quotes`,
+        position: { x: 0, y: currentY, width: containerWidth, height: 300 },
+        childOf: rootContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: style === 'minimal' ? "#F8F9FA" : "#FFFFFF",
+          layout: "VERTICAL",
+          itemSpacing: 24,
+          paddingTop: 48,
+          paddingBottom: 48,
+          paddingLeft: 24,
+          paddingRight: 24
+        }
+      });
+      
+      currentY += 300 + defaultMargin;
+    }
+    
+    if (prompt.toLowerCase().includes('contact') || prompt.toLowerCase().includes('form')) {
+      elements.push({
+        type: 'form',
+        description: `Contact form with name, email, subject and message fields`,
+        position: { x: 0, y: currentY, width: containerWidth, height: 400 },
+        childOf: rootContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: "#FFFFFF",
+          cornerRadius: 8,
+          layout: "VERTICAL",
+          itemSpacing: 16,
+          paddingTop: 32,
+          paddingBottom: 32,
+          paddingLeft: 24,
+          paddingRight: 24
+        }
+      });
+      
+      currentY += 400 + defaultMargin;
+    }
+    
+    // Always add footer last
+    elements.push({
+      type: 'frame',
+      description: `Footer with company info, navigation links, and social media icons`,
+      position: { x: 0, y: currentY, width: containerWidth, height: 200 },
+      childOf: rootContainer,
+      layoutPosition: 'bottom',
+      styles: {
+        fill: "#212529",
+        layout: "VERTICAL",
+        itemSpacing: 24,
+        paddingTop: 48,
+        paddingBottom: 48,
+        paddingLeft: 24,
+        paddingRight: 24,
+        color: "#FFFFFF"
+      }
+    });
+    
+    // Update the main container's height to fit all content
+    elements[0].position!.height = currentY + 200 + defaultMargin;
+  } 
+  else if (type === 'mobile app') {
+    // For mobile app designs, create a single-column layout
+    rootContainer = 'app-container';
+    elements.push({
+      type: 'frame',
+      description: `Mobile app screen container`,
+      position: { 
+        x: (pageWidth - 375) / 2, 
+        y: 0, 
+        width: 375, 
+        height: 812 
+      },
+      styles: {
+        fill: "#FFFFFF",
+        cornerRadius: 0,
+        layout: "VERTICAL",
+        itemSpacing: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        paddingLeft: 0,
+        paddingRight: 0
+      }
+    });
+    
+    currentY = 0;
+    
+    // Status bar
+    elements.push({
+      type: 'frame',
+      description: `Status bar and app header with title and navigation controls`,
+      position: { x: 0, y: currentY, width: 375, height: 80 },
+      childOf: rootContainer,
+      layoutPosition: 'top',
+      styles: {
+        fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
+        layout: "HORIZONTAL",
+        itemSpacing: 16,
+        paddingLeft: 16,
+        paddingRight: 16,
+        paddingTop: 16,
+        paddingBottom: 16,
+        justifyContent: "SPACE_BETWEEN"
+      }
+    });
+    
+    currentY += 80;
+    
+    if (prompt.toLowerCase().includes('login') || prompt.toLowerCase().includes('sign')) {
+      elements.push({
+        type: 'form',
+        description: `Login form with username/email and password fields`,
+        position: { x: 0, y: currentY, width: 375, height: 320 },
+        childOf: rootContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: "#FFFFFF",
+          layout: "VERTICAL",
+          itemSpacing: 16,
+          paddingTop: 32,
+          paddingBottom: 32,
+          paddingLeft: 24,
+          paddingRight: 24
+        }
+      });
+      
+      currentY += 320;
+    }
+    
+    if (prompt.toLowerCase().includes('feed') || prompt.toLowerCase().includes('timeline')) {
+      elements.push({
+        type: 'frame',
+        description: `Content feed with scrollable items and interaction elements`,
+        position: { x: 0, y: currentY, width: 375, height: 450 },
+        childOf: rootContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: "#FFFFFF",
+          layout: "VERTICAL",
+          itemSpacing: 16,
+          paddingTop: 16,
+          paddingBottom: 16,
+          paddingLeft: 16,
+          paddingRight: 16
+        }
+      });
+      
+      currentY += 450;
+    }
+    
+    if (prompt.toLowerCase().includes('profile')) {
+      elements.push({
+        type: 'frame',
+        description: `User profile section with avatar, user info, and stats`,
+        position: { x: 0, y: currentY, width: 375, height: 400 },
+        childOf: rootContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: "#FFFFFF",
+          layout: "VERTICAL",
+          itemSpacing: 16,
+          paddingTop: 24,
+          paddingBottom: 24,
+          paddingLeft: 24,
+          paddingRight: 24
+        }
+      });
+      
+      currentY += 400;
+    }
+    
+    if (prompt.toLowerCase().includes('settings')) {
+      elements.push({
+        type: 'frame',
+        description: `Settings screen with toggle switches and preference options`,
+        position: { x: 0, y: currentY, width: 375, height: 400 },
+        childOf: rootContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: "#FFFFFF",
+          layout: "VERTICAL",
+          itemSpacing: 16,
+          paddingTop: 24,
+          paddingBottom: 24,
+          paddingLeft: 24,
+          paddingRight: 24
+        }
+      });
+      
+      currentY += 400;
+    }
+    
+    // Tab bar
+    elements.push({
+      type: 'frame',
+      description: `Bottom navigation bar with main app sections`,
+      position: { x: 0, y: 732, width: 375, height: 80 },
+      childOf: rootContainer,
+      layoutPosition: 'bottom',
+      styles: {
+        fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
+        layout: "HORIZONTAL",
+        itemSpacing: 0,
+        paddingLeft: 0,
+        paddingRight: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        justifyContent: "SPACE_AROUND"
+      }
+    });
+  }
+  else if (type === 'dashboard') {
+    // For dashboard designs
+    rootContainer = 'dashboard-container';
+    elements.push({
+      type: 'frame',
+      description: `Dashboard layout container`,
+      position: { 
+        x: 0, 
+        y: 0, 
+        width: pageWidth, 
+        height: 900 
+      },
+      styles: {
+        fill: style === 'minimal' ? "#F8F9FA" : "#FFFFFF",
+        cornerRadius: 0,
+        layout: "HORIZONTAL",
+        itemSpacing: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        paddingLeft: 0,
+        paddingRight: 0
+      }
+    });
+    
+    // Sidebar first (left side)
+    elements.push({
+      type: 'frame',
+      description: `Sidebar navigation with main dashboard sections`,
+      position: { x: 0, y: 0, width: 240, height: 900 },
+      childOf: rootContainer,
+      layoutPosition: 'left',
+      styles: {
+        fill: style === 'minimal' ? "#FFFFFF" : "#212529",
+        layout: "VERTICAL",
+        itemSpacing: 8,
+        paddingLeft: 16,
+        paddingRight: 16,
+        paddingTop: 24,
+        paddingBottom: 24,
+        color: style === 'minimal' ? "#212529" : "#FFFFFF"
+      }
+    });
+    
+    // Header (top right)
+    elements.push({
+      type: 'navbar',
+      description: `Dashboard header with logo, search, and user profile`,
+      position: { x: 240, y: 0, width: pageWidth - 240, height: 64 },
+      childOf: rootContainer,
+      layoutPosition: 'top',
+      styles: {
+        fill: "#FFFFFF",
+        layout: "HORIZONTAL",
+        itemSpacing: 24,
+        paddingLeft: 24,
+        paddingRight: 24,
+        paddingTop: 12,
+        paddingBottom: 12,
+        justifyContent: "SPACE_BETWEEN"
+      }
+    });
+    
+    // Main content container
+    const mainContentContainer = 'dashboard-content';
+    elements.push({
+      type: 'frame',
+      description: `Main dashboard content area`,
+      position: { x: 240, y: 64, width: pageWidth - 240, height: 836 },
+      childOf: rootContainer,
+      layoutPosition: 'center',
+      styles: {
+        fill: "#F8F9FA",
+        layout: "VERTICAL",
+        itemSpacing: 24,
+        paddingLeft: 24,
+        paddingRight: 24,
+        paddingTop: 24,
+        paddingBottom: 24
+      }
+    });
+    
+    // Stats cards
+    elements.push({
+      type: 'frame',
+      description: `Stats overview with 4 key metric cards`,
+      position: { x: 0, y: 0, width: pageWidth - 240 - 48, height: 120 },
+      childOf: mainContentContainer,
+      layoutPosition: 'top',
+      styles: {
+        fill: "transparent",
+        layout: "HORIZONTAL",
+        itemSpacing: 24,
+        paddingLeft: 0,
+        paddingRight: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        justifyContent: "SPACE_BETWEEN"
+      }
+    });
+    
+    if (prompt.toLowerCase().includes('chart') || prompt.toLowerCase().includes('graph')) {
+      elements.push({
+        type: 'frame',
+        description: `Chart section with multiple data visualizations`,
+        position: { x: 0, y: 144, width: pageWidth - 240 - 48, height: 300 },
+        childOf: mainContentContainer,
+        layoutPosition: 'center',
+        styles: {
+          fill: "#FFFFFF",
+          cornerRadius: 8,
+          layout: "VERTICAL",
+          itemSpacing: 16,
+          paddingTop: 16,
+          paddingBottom: 16,
+          paddingLeft: 16,
+          paddingRight: 16
+        }
+      });
+    }
+    
+    if (prompt.toLowerCase().includes('table') || prompt.toLowerCase().includes('list')) {
+      elements.push({
+        type: 'frame',
+        description: `Data table with paginated results and sorting options`,
+        position: { x: 0, y: 468, width: pageWidth - 240 - 48, height: 344 },
+        childOf: mainContentContainer,
+        layoutPosition: 'bottom',
+        styles: {
+          fill: "#FFFFFF",
+          cornerRadius: 8,
+          layout: "VERTICAL",
+          itemSpacing: 0,
+          paddingTop: 16,
+          paddingBottom: 16,
+          paddingLeft: 16,
+          paddingRight: 16
+        }
+      });
+    }
+  }
+  
+  // Process elements mentioned in the prompt
+  const lines = prompt.split('\n');
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    
+    // Skip empty lines or numbered bullets without content
+    if (!trimmedLine || /^\d+\.?\s*$/.test(trimmedLine)) continue;
+    
+    // Remove numbering from the start of the line
+    const content = trimmedLine.replace(/^\d+\.?\s*/, '').trim();
+    if (!content) continue;
+    
+    // Check for identifiable UI elements in this line
+    if (content.toLowerCase().includes('header') && !elements.some(e => e.type === 'navbar')) {
+      elements.unshift({
+        type: 'navbar',
+        description: content
+      });
+      continue;
+    }
+    
+    if (content.toLowerCase().includes('footer') && !elements.some(e => e.description.toLowerCase().includes('footer'))) {
+      elements.push({
+        type: 'frame',
+        description: content
+      });
+      continue;
+    }
+    
+    if ((content.toLowerCase().includes('button') || content.toLowerCase().includes('cta')) && 
+        !elements.some(e => e.type === 'button' && e.description.includes(content))) {
+      elements.push({
+        type: 'button',
+        description: content
+      });
+      continue;
+    }
+    
+    if ((content.toLowerCase().includes('form') || content.toLowerCase().includes('input') || 
+         content.toLowerCase().includes('field')) && 
+        !elements.some(e => e.type === 'form' && e.description.includes(content))) {
+      elements.push({
+        type: 'form',
+        description: content
+      });
+      continue;
+    }
+    
+    if ((content.toLowerCase().includes('navigation') || content.toLowerCase().includes('breadcrumb') || 
+         content.toLowerCase().includes('menu')) && 
+        !elements.some(e => e.type === 'navbar' && e.description.includes(content))) {
+      elements.push({
+        type: 'navbar',
+        description: content
+      });
+      continue;
+    }
+    
+    // If the line contains a description of a section but hasn't been categorized yet,
+    // add it as a generic frame
+    if (content.toLowerCase().includes('section') || 
+        content.toLowerCase().includes('area') || 
+        content.toLowerCase().includes('container') ||
+        content.length > 20) {
+      elements.push({
+        type: 'frame',
+        description: content
+      });
+    }
+  }
+  
+  // Make sure all elements have appropriate IDs for parent-child relationships
+  elements.forEach((element, index) => {
+    if (!element.childOf && index > 0) {
+      // If no parent is specified and it's not the root container,
+      // set the parent to the root container
+      element.childOf = rootContainer;
+    }
+  });
+  
+  logger.debug(`Broke down prompt into ${elements.length} elements with hierarchy`, { elements });
+  return elements;
 }
 
 async function exportFigmaDesign(
@@ -893,13 +1487,20 @@ async function runServer() {
     server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       try {
         const { name, arguments: args } = request.params;
-        logger.info('Handling tool call request', { toolName: name });
+        const mcpRequestId = request.id; // Capture the MCP request ID
+        logger.info('Handling tool call request', { toolName: name, mcpRequestId });
         
         if (!args) {
           logger.warn('No arguments provided for tool call', { toolName: name });
           throw new Error("No arguments provided");
         }
 
+        // Create a command ID for Figma plugin that we can track
+        const pluginCommandId = `mcp_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        
+        // Get the plugin bridge instance to track MCP request IDs
+        const pluginBridge = getPluginBridge();
+        
         switch (name) {
           case "create_figma_frame": {
             if (!isCreateFrameArgs(args)) {
@@ -909,15 +1510,53 @@ async function runServer() {
             const { name, width = 1920, height = 1080, background = "#FFFFFF" } = args;
             
             try {
-              const frameId = await createFigmaFrame(name, width, height, background);
-              logger.info('create_figma_frame tool completed successfully', { frameId });
-              return {
-                content: [{ 
-                  type: "text", 
-                  text: `Successfully created frame "${name}" (${width}x${height}) with ID: ${frameId}` 
-                }],
-                isError: false,
+              // Store the MCP request ID before making the plugin command call
+              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+              
+              // Call the plugin with the tracked command ID
+              const command: PluginCommand = {
+                type: 'CREATE_WIREFRAME',
+                payload: {
+                  description: name,
+                  pages: ['Home'],
+                  style: 'minimal',
+                  dimensions: { width, height },
+                  designSystem: { background },
+                  renamePage: false
+                },
+                id: pluginCommandId // Use our trackable ID
               };
+              
+              // For real-mode, send the command and let the plugin bridge handle the response
+              // and transform it to JSON-RPC format
+              if (!useRealMode) {
+                // In mock mode, we need to handle it ourselves
+                const frameId = await createFigmaFrame(name, width, height, background);
+                logger.info('create_figma_frame tool completed successfully', { frameId });
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Successfully created frame "${name}" (${width}x${height}) with ID: ${frameId}` 
+                  }],
+                  isError: false,
+                };
+              } else {
+                // In real mode, we send the command but don't wait for the response here
+                // The plugin bridge will handle the response and send it to the MCP server
+                sendPluginCommand(command).catch(error => {
+                  logger.error('Error in plugin command execution', error as Error);
+                });
+                
+                // Return a placeholder response that will be replaced when the real response comes in
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Processing request to create frame "${name}"...` 
+                  }],
+                  isError: false,
+                  _isPlaceholder: true
+                };
+              }
             } catch (error) {
               return {
                 content: [{ 
@@ -936,16 +1575,51 @@ async function runServer() {
             const { type, description, style = "modern", parentNodeId } = args;
             
             try {
-              const componentId = await createFigmaComponent(type, description, style, parentNodeId);
-            return {
-                content: [{ 
-                  type: "text", 
-                  text: `Successfully created ${type} component with ID: ${componentId}` 
-                }],
-              isError: false,
-            };
+              // Store the MCP request ID before making the plugin command call
+              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+              
+              // Call the plugin with the tracked command ID
+              const command: PluginCommand = {
+                type: 'ADD_ELEMENT',
+                payload: {
+                  elementType: type.toUpperCase(),
+                  parent: parentNodeId,
+                  properties: {
+                    name: `${type} - ${description.substring(0, 20)}...`,
+                    text: description,
+                    content: description,
+                    style: style
+                  }
+                },
+                id: pluginCommandId // Use our trackable ID
+              };
+              
+              if (!useRealMode) {
+                const componentId = await createFigmaComponent(type, description, style, parentNodeId);
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Successfully created ${type} component with ID: ${componentId}` 
+                  }],
+                  isError: false,
+                };
+              } else {
+                // In real mode, send the command but don't wait for response here
+                sendPluginCommand(command).catch(error => {
+                  logger.error('Error in plugin command execution', error as Error);
+                });
+                
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Processing request to create ${type} component...` 
+                  }],
+                  isError: false,
+                  _isPlaceholder: true
+                };
+              }
             } catch (error) {
-            return {
+              return {
                 content: [{ 
                   type: "text", 
                   text: `Error creating component: ${error instanceof Error ? error.message : String(error)}` 
@@ -962,14 +1636,48 @@ async function runServer() {
             const { nodeId, styleDescription, fillColor, strokeColor, textProperties } = args;
             
             try {
-              const styledNodeId = await styleFigmaNode(styleDescription, nodeId, fillColor, strokeColor, textProperties);
-            return {
-                content: [{ 
-                  type: "text", 
-                  text: `Successfully styled node with ID: ${styledNodeId}` 
-                }],
-              isError: false,
-            };
+              // Store the MCP request ID before making the plugin command call
+              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+              
+              // Call the plugin with the tracked command ID
+              const command: PluginCommand = {
+                type: 'STYLE_ELEMENT',
+                payload: {
+                  elementId: nodeId,
+                  styles: {
+                    description: styleDescription,
+                    fill: fillColor,
+                    stroke: strokeColor,
+                    ...(textProperties || {})
+                  }
+                },
+                id: pluginCommandId // Use our trackable ID
+              };
+              
+              if (!useRealMode) {
+                const styledNodeId = await styleFigmaNode(styleDescription, nodeId, fillColor, strokeColor, textProperties);
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Successfully styled node with ID: ${styledNodeId}` 
+                  }],
+                  isError: false,
+                };
+              } else {
+                // In real mode, send the command but don't wait for response here
+                sendPluginCommand(command).catch(error => {
+                  logger.error('Error in plugin command execution', error as Error);
+                });
+                
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Processing request to style node...` 
+                  }],
+                  isError: false,
+                  _isPlaceholder: true
+                };
+              }
             } catch (error) {
               return {
                 content: [{ 
@@ -988,16 +1696,155 @@ async function runServer() {
             const { prompt, type, style = "modern" } = args;
             
             try {
-              const designId = await generateFigmaDesign(prompt, type, style);
-            return {
-                content: [{ 
-                  type: "text", 
-                  text: `Successfully generated ${type} design based on prompt with root frame ID: ${designId}` 
-                }],
-              isError: false,
-            };
+              // Store the MCP request ID before making the plugin command call
+              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+              
+              // First, create the wireframe
+              const wireframeCommand: PluginCommand = {
+                type: 'CREATE_WIREFRAME',
+                payload: {
+                  description: prompt.split('\n')[0] || prompt.substring(0, 50), // Use first line or first 50 chars
+                  pages: ['Home'],
+                  style: style,
+                  designSystem: {
+                    type: type
+                  },
+                  dimensions: {
+                    width: type === 'mobile app' ? 375 : 1440,
+                    height: type === 'mobile app' ? 812 : 900
+                  },
+                  renamePage: true
+                },
+                id: pluginCommandId // Use our trackable ID
+              };
+              
+              if (!useRealMode) {
+                const designId = await generateFigmaDesign(prompt, type, style);
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Successfully generated ${type} design based on prompt with root frame ID: ${designId}` 
+                  }],
+                  isError: false,
+                };
+              } else {
+                // In real mode, send the wireframe command first
+                const wireframeResponse = await sendPluginCommand<PluginResponse>(wireframeCommand);
+                
+                if (wireframeResponse.success && wireframeResponse.data?.pageIds && wireframeResponse.data.pageIds.length > 0) {
+                  const pageId = wireframeResponse.data.pageIds[0];
+                  
+                  // Break down the prompt into individual UI elements with hierarchy
+                  const elements = breakDownPromptIntoElements(prompt, type, style);
+                  
+                  logger.info(`Creating wireframe with ${elements.length} elements in a hierarchical structure...`);
+                  
+                  // Map to store created element IDs for parent-child relationships
+                  const elementIdMap: {[key: string]: string} = {};
+                  
+                  // Create each element in sequence
+                  for (let i = 0; i < elements.length; i++) {
+                    const element = elements[i];
+                    
+                    // Generate a unique ID for each element command
+                    const elementCommandId = `${pluginCommandId}_elem_${i}`;
+                    
+                    // Map to the same MCP request for the response
+                    pluginBridge.storeMcpRequestId(elementCommandId, mcpRequestId);
+                    
+                    // Determine parent ID
+                    let parentId = pageId;
+                    if (element.childOf && elementIdMap[element.childOf]) {
+                      parentId = elementIdMap[element.childOf];
+                    }
+                    
+                    // Store element identifier for references
+                    const elementKey = element.type + '-' + i;
+                    
+                    // Create the element command with positioning
+                    const elementCommand: PluginCommand = {
+                      type: 'ADD_ELEMENT',
+                      payload: {
+                        elementType: element.type.toUpperCase(),
+                        parent: parentId,
+                        properties: {
+                          name: `${element.type} - ${element.description.substring(0, 20)}...`,
+                          text: element.description,
+                          content: element.description,
+                          style: style,
+                          position: element.position,
+                          layoutPosition: element.layoutPosition,
+                          styles: element.styles || {}
+                        }
+                      },
+                      id: elementCommandId
+                    };
+                    
+                    logger.info(`Creating element ${i+1}/${elements.length}: ${element.type} with parent ${parentId === pageId ? 'PAGE' : parentId}`);
+                    
+                    try {
+                      // Send the command
+                      const response = await sendPluginCommand<PluginResponse>(elementCommand);
+                      
+                      // Store the created element ID for future parent references
+                      if (response.success && response.data?.id) {
+                        elementIdMap[elementKey] = response.data.id;
+                        
+                        // If this is the root container for a type, store its ID
+                        if (i === 0 || (element.childOf === undefined && element.type === 'frame')) {
+                          // This is likely a container/main frame, register it with its proper name for child references
+                          if (type === 'website' || type === 'landing page') {
+                            elementIdMap['main-container'] = response.data.id;
+                          } else if (type === 'mobile app') {
+                            elementIdMap['app-container'] = response.data.id;
+                          } else if (type === 'dashboard') {
+                            elementIdMap['dashboard-container'] = response.data.id;
+                          }
+                          
+                          if (element.description.includes('content')) {
+                            elementIdMap['dashboard-content'] = response.data.id;
+                          }
+                        }
+                        
+                        logger.debug(`Created element ${elementKey} with ID ${response.data.id}`);
+                      } else {
+                        logger.warn(`Failed to create element ${elementKey}`, response.error);
+                      }
+                      
+                      // Small delay to allow Figma to process each element
+                      await new Promise(resolve => setTimeout(resolve, 300));
+                    } catch (elemError) {
+                      logger.warn(`Error creating element ${element.type}`, elemError as Error);
+                      // Continue with other elements
+                    }
+                  }
+                  
+                  // Return success with reference to created element IDs map
+                  return {
+                    content: [{ 
+                      type: "text", 
+                      text: `Generated ${type} design with ${elements.length} properly positioned UI elements based on your description` 
+                    }],
+                    isError: false
+                  };
+                } else {
+                  // If wireframe creation failed, just send the wireframe command but don't wait
+                  sendPluginCommand(wireframeCommand).catch(error => {
+                    logger.error('Error in plugin command execution', error as Error);
+                  });
+                  
+                  return {
+                    content: [{ 
+                      type: "text", 
+                      text: `Processing request to generate ${type} design...` 
+                    }],
+                    isError: false,
+                    _isPlaceholder: true
+                  };
+                }
+              }
             } catch (error) {
-            return {
+              return {
                 content: [{ 
                   type: "text", 
                   text: `Error generating design: ${error instanceof Error ? error.message : String(error)}` 
@@ -1014,14 +1861,50 @@ async function runServer() {
             const { nodeId, format = "png", scale = 1, includeBackground = true } = args;
             
             try {
-              const exportUrl = await exportFigmaDesign(nodeId, format, scale, includeBackground);
-            return {
-                content: [{ 
-                  type: "text", 
-                  text: `Successfully exported design: ${exportUrl}` 
-                }],
-              isError: false,
-            };
+              // Store the MCP request ID before making the plugin command call
+              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+              
+              // Call the plugin with the tracked command ID
+              const command: PluginCommand = {
+                type: 'EXPORT_DESIGN',
+                payload: {
+                  selection: nodeId ? [nodeId] : undefined,
+                  settings: {
+                    format: format.toUpperCase(),
+                    constraint: {
+                      type: 'SCALE',
+                      value: scale
+                    },
+                    includeBackground
+                  }
+                },
+                id: pluginCommandId // Use our trackable ID
+              };
+              
+              if (!useRealMode) {
+                const exportUrl = await exportFigmaDesign(nodeId, format, scale, includeBackground);
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Successfully exported design: ${exportUrl}` 
+                  }],
+                  isError: false,
+                };
+              } else {
+                // In real mode, send the command but don't wait for response here
+                sendPluginCommand(command).catch(error => {
+                  logger.error('Error in plugin command execution', error as Error);
+                });
+                
+                return {
+                  content: [{ 
+                    type: "text", 
+                    text: `Processing request to export design...` 
+                  }],
+                  isError: false,
+                  _isPlaceholder: true
+                };
+              }
             } catch (error) {
               return {
                 content: [{ 
