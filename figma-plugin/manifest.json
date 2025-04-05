@@ -8,8 +8,10 @@
   "networkAccess": {
     "allowedDomains": [
       "https://fonts.googleapis.com",
-      "https://fonts.gstatic.com"
-    ]
+      "https://fonts.gstatic.com",
+      "ws://localhost:9000"
+    ],
+    "reasoning": "This plugin requires access to the MCP server running locally or in a Docker container."
   },
   "menu": [
     {

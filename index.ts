@@ -10,6 +10,7 @@ import {
   ListPromptsRequestSchema,
   Prompt,
   PromptArgument,
+  ProgressNotificationSchema
 } from "@modelcontextprotocol/sdk/types.js";
 import { 
   PluginBridge, 
@@ -20,6 +21,8 @@ import {
   PluginResponse
 } from "./plugin-bridge.js";
 import { initializePluginBridge } from "./plugin-bridge.js";
+import * as path from 'path';
+import * as fs from 'fs';
 
 // Define result interfaces
 interface FigmaNodeResult {
@@ -35,6 +38,102 @@ interface FigmaExportResult {
   width?: number;
   height?: number;
 }
+
+// Define logging utilities for structured JSON logs
+interface LogEntry {
+  timestamp: string;
+  level: 'info' | 'warn' | 'error' | 'debug';
+  message: string;
+  context?: any;
+  error?: {
+    message: string;
+    stack?: string;
+  };
+}
+
+// Logger utility that outputs structured JSON
+class Logger {
+  private serviceName: string;
+  private startTime: number;
+  private debugMode: boolean;
+
+  constructor(serviceName: string) {
+    this.serviceName = serviceName;
+    this.startTime = Date.now();
+    this.debugMode = process.env.DEBUG === 'true';
+  }
+
+  private formatLog(level: LogEntry['level'], message: string, context?: any, error?: Error): string {
+    const logEntry: LogEntry = {
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+    };
+
+    // Add service metadata
+    const metadata = {
+      service: this.serviceName,
+      uptime: (Date.now() - this.startTime) / 1000,
+      pid: process.pid
+    };
+
+    // Add context if provided
+    if (context) {
+      logEntry.context = context;
+    }
+
+    // Add error details if provided
+    if (error) {
+      logEntry.error = {
+        message: error.message
+      };
+      
+      // Only add stack in non-production environments
+      if (process.env.NODE_ENV !== 'production') {
+        logEntry.error.stack = error.stack;
+      }
+    }
+
+    // Return as JSON string with metadata
+    return JSON.stringify({ ...logEntry, ...metadata });
+  }
+
+  // Write logs to another file descriptor to avoid interfering with StdioServerTransport
+  private writeLog(logString: string): void {
+    // In Docker/container environments, we want to write to a separate FD
+    // or use process.stderr with a prefix that can be filtered
+    
+    // Option 1: Write to process.stderr with a prefix
+    process.stderr.write(`FIGMA_MCP_LOG: ${logString}\n`);
+    
+    // Option 2: If in debug mode, also write to console for local development
+    if (this.debugMode && process.env.NODE_ENV !== 'production') {
+      console.log(`DEBUG LOG: ${logString}`);
+    }
+  }
+
+  info(message: string, context?: any): void {
+    this.writeLog(this.formatLog('info', message, context));
+  }
+
+  warn(message: string, context?: any, error?: Error): void {
+    this.writeLog(this.formatLog('warn', message, context, error));
+  }
+
+  error(message: string, error?: Error, context?: any): void {
+    this.writeLog(this.formatLog('error', message, context, error));
+  }
+
+  debug(message: string, context?: any): void {
+    // Only log debug in non-production environments or when debug mode is enabled
+    if (process.env.NODE_ENV !== 'production' || this.debugMode) {
+      this.writeLog(this.formatLog('debug', message, context));
+    }
+  }
+}
+
+// Create logger instance
+const logger = new Logger('figma-mcp-server');
 
 // Define Figma design tools
 const CREATE_FRAME_TOOL: Tool = {
@@ -251,37 +350,41 @@ const PROMPTS = [
   }
 ];
 
-// Server implementation
-const server = new Server(
-  {
-    name: "figma-mcp-server",
-    version: "0.1.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-      prompts: {},
-    },
-  },
-);
+// Parse command line arguments
+const args = process.argv.slice(2);
+const useRealMode = args.includes('--real') || args.includes('-r') || process.env.WEBSOCKET_MODE === 'true';
+const wsPort = parseInt(process.env.WS_PORT || '9000', 10);
+const wsHost = process.env.WS_HOST || '0.0.0.0';
 
-// Initialize plugin bridge
-let pluginBridge: PluginBridge;
-
+// Initialize the plugin bridge with real or mock mode
 async function initializePlugin() {
   try {
-    // Get the plugin bridge instance and initialize it
-    // Using real mode (false) instead of mock mode
-    pluginBridge = await initializePluginBridge(server, false); // false = use real plugin mode
+    logger.info(`Initializing plugin bridge in ${useRealMode ? 'real' : 'mock'} mode`);
     
-    // Connect the bridge to the server
-    pluginBridge.connectToMCPServer(server);
+    if (useRealMode) {
+      logger.info(`Starting WebSocket server on ${wsHost}:${wsPort}`);
+    }
     
-    console.error("Figma plugin bridge initialized in REAL mode");
-    console.error("Please ensure Figma desktop app is running with your plugin installed");
+    const plugin = await initializePluginBridge(null, !useRealMode, wsPort);
+    
+    // Add shutdown handler
+    process.on('SIGINT', () => {
+      logger.info('Shutting down plugin bridge...');
+      plugin.shutdown();
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', () => {
+      logger.info('Shutting down plugin bridge...');
+      plugin.shutdown();
+      process.exit(0);
+    });
+    
+    logger.info('Plugin bridge initialized successfully');
+    return plugin;
   } catch (error) {
-    console.error("Failed to initialize Figma plugin bridge:", error);
-    process.exit(1);
+    logger.error('Failed to initialize plugin bridge', error as Error);
+    throw error;
   }
 }
 
@@ -361,7 +464,11 @@ function isExportDesignArgs(args: unknown): args is {
 // Tool implementation functions
 async function createFigmaFrame(name: string, width: number = 1920, height: number = 1080, background: string = "#FFFFFF"): Promise<string> {
   try {
-    console.error(`Creating Figma frame: ${name} (${width}x${height})`);
+    logger.info('Creating Figma frame', { 
+      name, 
+      dimensions: { width, height }, 
+      background 
+    });
     
     const command: PluginCommand = {
       type: 'CREATE_WIREFRAME',
@@ -370,7 +477,8 @@ async function createFigmaFrame(name: string, width: number = 1920, height: numb
         pages: ['Home'],    // Define at least one page
         style: 'minimal',   // Default style
         dimensions: { width, height },
-        designSystem: { background }
+        designSystem: { background },
+        renamePage: false   // Don't rename the current page by default
       },
       id: `frame_${Date.now()}`
     };
@@ -378,12 +486,21 @@ async function createFigmaFrame(name: string, width: number = 1920, height: numb
     const response = await sendPluginCommand<PluginResponse>(command);
     
     if (!response.success) {
-      throw new Error(response.error || 'Failed to create frame');
+      const errorMsg = response.error || 'Failed to create frame';
+      logger.error('Frame creation failed', new Error(errorMsg), { command });
+      throw new Error(errorMsg);
     }
+    
+    // Log success
+    logger.info('Frame created successfully', {
+      wireframeId: response.data?.wireframeId,
+      activePageId: response.data?.activePageId,
+      pageIds: response.data?.pageIds
+    });
     
     return response.data?.wireframeId || response.data?.pageIds?.[0] || 'unknown-id';
   } catch (error) {
-    console.error("Error creating frame:", error);
+    logger.error('Error creating frame', error as Error, { name, width, height });
     throw error;
   }
 }
@@ -395,23 +512,18 @@ async function createFigmaComponent(
   parentNodeId?: string
 ): Promise<string> {
   try {
-    console.error(`Creating Figma component: ${type} - ${description}`);
+    logger.info('Creating Figma component', { 
+      type, 
+      description, 
+      style, 
+      parentNodeId 
+    });
     
-    // Make sure we have a valid parent
-    if (!parentNodeId) {
-      // Get current selection to find a parent
-      const selection = await getCurrentSelection();
-      if (selection && selection.length > 0) {
-        parentNodeId = selection[0].id;
-      } else {
-        // If no selection, get current page
-        const page = await getCurrentPage();
-        if (page && page.id) {
-          parentNodeId = page.id;
-        } else {
-          throw new Error('No parent node available. Please select a frame or page first.');
-        }
-      }
+    // If parentNodeId is explicitly provided as "current-selection", set it to null
+    // so the plugin will use its prioritized parent resolution logic
+    if (parentNodeId === "current-selection") {
+      parentNodeId = undefined;
+      logger.debug('Using current selection as parent');
     }
     
     // Map component type to element type expected by plugin
@@ -429,7 +541,7 @@ async function createFigmaComponent(
       type: 'ADD_ELEMENT',
       payload: {
         elementType,
-        parent: parentNodeId,
+        parent: parentNodeId, // This can be undefined - plugin will handle it
         properties: {
           name: `${type} - ${description.substring(0, 20)}...`,
           text: description,
@@ -443,12 +555,23 @@ async function createFigmaComponent(
     const response = await sendPluginCommand<PluginResponse>(command);
     
     if (!response.success) {
-      throw new Error(response.error || 'Failed to create component');
+      const errorMsg = response.error || 'Failed to create component';
+      logger.error('Component creation failed', new Error(errorMsg), { command });
+      throw new Error(errorMsg);
     }
     
-    return typeof response.data === 'string' ? response.data : response.data?.id || 'unknown-id';
+    // Log success
+    logger.info('Component created successfully', {
+      id: response.data?.id,
+      type: response.data?.type,
+      parentId: response.data?.parentId,
+      parentType: response.data?.parentType,
+      activePageId: response.data?.activePageId
+    });
+    
+    return response.data?.id || 'unknown-id';
   } catch (error) {
-    console.error("Error creating component:", error);
+    logger.error('Error creating component', error as Error, { type, description });
     throw error;
   }
 }
@@ -461,27 +584,42 @@ async function styleFigmaNode(
   textProperties?: object
 ): Promise<string> {
   try {
-    console.error(`Styling Figma node: ${nodeId || 'current selection'}`);
+    logger.info('Styling Figma node', { 
+      styleDescription, 
+      nodeId: nodeId || 'current-selection',
+      fillColor,
+      strokeColor,
+      textProperties 
+    });
     
-    // If no node ID provided, get current selection
-    if (!nodeId) {
-      const selection = await getCurrentSelection();
-      if (selection && selection.length > 0) {
-        nodeId = selection[0].id;
-      } else {
-        throw new Error('No node selected to style');
-      }
+    // If nodeId is explicitly provided as "current-selection", set it to null
+    // so the plugin will use the current selection
+    if (nodeId === "current-selection") {
+      nodeId = undefined;
+      logger.debug('Using current selection for styling');
+    }
+    
+    // Convert text properties to expected format
+    const textProps: any = {};
+    if (textProperties) {
+      Object.assign(textProps, textProperties);
+    }
+    
+    // If we have a style description but no explicit properties, 
+    // add it as content for text nodes
+    if (styleDescription && (!textProps.content && !textProps.text)) {
+      textProps.text = styleDescription;
     }
     
     const command: PluginCommand = {
       type: 'STYLE_ELEMENT',
       payload: {
-        elementId: nodeId,
+        elementId: nodeId, // This can be undefined - plugin will use selection
         styles: {
           description: styleDescription,
           fill: fillColor,
           stroke: strokeColor,
-          text: textProperties
+          ...textProps
         }
       },
       id: `style_${Date.now()}`
@@ -490,12 +628,21 @@ async function styleFigmaNode(
     const response = await sendPluginCommand<PluginResponse>(command);
     
     if (!response.success) {
-      throw new Error(response.error || 'Failed to style node');
+      const errorMsg = response.error || 'Failed to style node';
+      logger.error('Node styling failed', new Error(errorMsg), { command });
+      throw new Error(errorMsg);
     }
     
-    return nodeId!;
+    // Log success
+    logger.info('Node styled successfully', {
+      id: response.data?.id,
+      type: response.data?.type,
+      activePageId: response.data?.activePageId
+    });
+    
+    return response.data?.id || nodeId || 'unknown-id';
   } catch (error) {
-    console.error("Error styling node:", error);
+    logger.error('Error styling node', error as Error, { styleDescription, nodeId });
     throw error;
   }
 }
@@ -506,7 +653,11 @@ async function generateFigmaDesign(
   style: string = "modern"
 ): Promise<string> {
   try {
-    console.error(`Generating Figma design from prompt: ${prompt}`);
+    logger.info('Generating Figma design', { 
+      prompt, 
+      type, 
+      style 
+    });
     
     // For a complete design, we'll create a wireframe with multiple pages
     const pages = ['Home'];
@@ -520,6 +671,8 @@ async function generateFigmaDesign(
       pages.push('Analytics', 'Reports', 'Settings');
     }
     
+    logger.debug('Design will include pages', { pages });
+    
     const command: PluginCommand = {
       type: 'CREATE_WIREFRAME',
       payload: {
@@ -532,7 +685,8 @@ async function generateFigmaDesign(
         dimensions: {
           width: type === 'mobile app' ? 375 : 1440,
           height: type === 'mobile app' ? 812 : 900
-        }
+        },
+        renamePage: true // Rename the page with the prompt description for this tool
       },
       id: `design_${Date.now()}`
     };
@@ -540,12 +694,47 @@ async function generateFigmaDesign(
     const response = await sendPluginCommand<PluginResponse>(command);
     
     if (!response.success) {
-      throw new Error(response.error || 'Failed to generate design');
+      const errorMsg = response.error || 'Failed to generate design';
+      logger.error('Design generation failed', new Error(errorMsg), { command });
+      throw new Error(errorMsg);
+    }
+    
+    // Log success
+    logger.info('Design generated successfully', {
+      wireframeId: response.data?.wireframeId,
+      activePageId: response.data?.activePageId,
+      pageIds: response.data?.pageIds
+    });
+    
+    // After creating the wireframe, populate each page with appropriate elements
+    if (response.data?.pageIds && response.data.pageIds.length > 0) {
+      // Add elements to pages based on design type
+      // We'll use the first page to add a header
+      try {
+        const firstPageId = response.data.pageIds[0];
+        logger.debug('Adding components to first page', { firstPageId });
+        
+        await createFigmaComponent('navbar', `${type} navigation`, style, firstPageId);
+        
+        // For website or dashboard, add a hero section
+        if (type === 'website' || type === 'dashboard') {
+          await createFigmaComponent('frame', `Hero section for ${prompt}`, style, firstPageId);
+        }
+        
+        logger.info('Added initial components to design');
+      } catch (elemError) {
+        logger.warn(
+          'Created wireframe but failed to add elements',
+          { designContext: response.data },  // Context object as second parameter
+          elemError as Error  // Error as third parameter
+        );
+        // Continue despite element creation errors
+      }
     }
     
     return response.data?.wireframeId || response.data?.pageIds?.[0] || 'unknown-id';
   } catch (error) {
-    console.error("Error generating design:", error);
+    logger.error('Error generating design', error as Error, { prompt, type });
     throw error;
   }
 }
@@ -557,23 +746,30 @@ async function exportFigmaDesign(
   includeBackground: boolean = true
 ): Promise<string> {
   try {
-    console.error(`Exporting Figma design: ${nodeId || 'current selection'}`);
+    logger.info('Exporting Figma design', { 
+      nodeId: nodeId || 'current-selection', 
+      format, 
+      scale, 
+      includeBackground 
+    });
     
-    // If no node ID provided, use current selection
+    // If nodeId is explicitly provided as "current-selection", set it to null
+    if (nodeId === "current-selection") {
+      nodeId = undefined;
+      logger.debug('Using current selection for export');
+    }
+    
+    // If no node ID provided, use current selection or active page
     let selection: string[] = [];
-    if (!nodeId) {
-      const selectionResult = await getCurrentSelection();
-      if (selectionResult && selectionResult.length > 0) {
-        selection = selectionResult.map(node => node.id);
-      }
-    } else {
+    if (nodeId) {
       selection = [nodeId];
     }
+    // Otherwise, leave selection empty to let the plugin use current selection
     
     const command: PluginCommand = {
       type: 'EXPORT_DESIGN',
       payload: {
-        selection: selection,
+        selection: selection.length > 0 ? selection : undefined,
         settings: {
           format: format.toUpperCase(),
           constraint: {
@@ -589,8 +785,17 @@ async function exportFigmaDesign(
     const response = await sendPluginCommand<PluginResponse>(command);
     
     if (!response.success) {
-      throw new Error(response.error || 'Failed to export design');
+      const errorMsg = response.error || 'Failed to export design';
+      logger.error('Design export failed', new Error(errorMsg), { command });
+      throw new Error(errorMsg);
     }
+    
+    // Log success but don't include the base64 data to avoid polluting logs
+    logger.info('Design exported successfully', {
+      fileCount: response.data?.files?.length || 0,
+      activePageId: response.data?.activePageId,
+      fileTypes: response.data?.files?.map((f: any) => f.format)
+    });
     
     // Return the first file URL or a placeholder
     if (response.data?.files && response.data.files.length > 0) {
@@ -602,277 +807,340 @@ async function exportFigmaDesign(
     
     return 'Export completed but no files returned';
   } catch (error) {
-    console.error("Error exporting design:", error);
+    logger.error('Error exporting design', error as Error, { nodeId, format });
     throw error;
   }
 }
 
-// Tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [CREATE_FRAME_TOOL, CREATE_COMPONENT_TOOL, STYLE_DESIGN_TOOL, PROMPT_TO_DESIGN_TOOL, EXPORT_DESIGN_TOOL],
-}));
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  try {
-    const { name, arguments: args } = request.params;
-
-    if (!args) {
-      throw new Error("No arguments provided");
-    }
-
-    switch (name) {
-      case "create_figma_frame": {
-        if (!isCreateFrameArgs(args)) {
-          throw new Error("Invalid arguments for create_figma_frame");
-        }
-        const { name, width = 1920, height = 1080, background = "#FFFFFF" } = args;
-        
-        try {
-          const frameId = await createFigmaFrame(name, width, height, background);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully created frame "${name}" (${width}x${height}) with ID: ${frameId}` 
-            }],
-          isError: false,
-        };
-        } catch (error) {
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Error creating frame: ${error instanceof Error ? error.message : String(error)}` 
-            }],
-            isError: true,
-          };
-        }
-      }
-
-      case "create_figma_component": {
-        if (!isCreateComponentArgs(args)) {
-          throw new Error("Invalid arguments for create_figma_component");
-        }
-        const { type, description, style = "modern", parentNodeId } = args;
-        
-        try {
-          const componentId = await createFigmaComponent(type, description, style, parentNodeId);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully created ${type} component with ID: ${componentId}` 
-            }],
-          isError: false,
-        };
-        } catch (error) {
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Error creating component: ${error instanceof Error ? error.message : String(error)}` 
-            }],
-            isError: true,
-          };
-        }
-      }
-
-      case "style_figma_node": {
-        if (!isStyleNodeArgs(args)) {
-          throw new Error("Invalid arguments for style_figma_node");
-        }
-        const { nodeId, styleDescription, fillColor, strokeColor, textProperties } = args;
-        
-        try {
-          const styledNodeId = await styleFigmaNode(styleDescription, nodeId, fillColor, strokeColor, textProperties);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully styled node with ID: ${styledNodeId}` 
-            }],
-          isError: false,
-        };
-        } catch (error) {
-          return {
-            content: [{ 
-              type: "text", 
-              text: `Error styling node: ${error instanceof Error ? error.message : String(error)}` 
-            }],
-            isError: true,
-          };
-        }
-      }
-
-      case "generate_figma_design": {
-        if (!isGenerateDesignArgs(args)) {
-          throw new Error("Invalid arguments for generate_figma_design");
-        }
-        const { prompt, type, style = "modern" } = args;
-        
-        try {
-          const designId = await generateFigmaDesign(prompt, type, style);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully generated ${type} design based on prompt with root frame ID: ${designId}` 
-            }],
-          isError: false,
-        };
-        } catch (error) {
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Error generating design: ${error instanceof Error ? error.message : String(error)}` 
-            }],
-            isError: true,
-          };
-        }
-      }
-
-      case "export_figma_design": {
-        if (!isExportDesignArgs(args)) {
-          throw new Error("Invalid arguments for export_figma_design");
-        }
-        const { nodeId, format = "png", scale = 1, includeBackground = true } = args;
-        
-        try {
-          const exportUrl = await exportFigmaDesign(nodeId, format, scale, includeBackground);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully exported design: ${exportUrl}` 
-            }],
-          isError: false,
-        };
-        } catch (error) {
-          return {
-            content: [{ 
-              type: "text", 
-              text: `Error exporting design: ${error instanceof Error ? error.message : String(error)}` 
-            }],
-            isError: true,
-          };
-        }
-      }
-
-      default:
-        return {
-          content: [{ type: "text", text: `Unknown tool: ${name}` }],
-          isError: true,
-        };
-    }
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-});
-
-// Prompt handlers
-server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-  prompts: PROMPTS
-}));
-
-server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  
-  switch (name) {
-    case "create-website-design": {
-      const description = args?.description || "";
-      const style = args?.style || "modern";
-      
-      return {
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text: `Create a website design with the following details:\n\nDescription: ${description}\nStyle: ${style}\n\nPlease generate a clean, professional design that includes navigation, hero section, content blocks, and footer.`
-            }
-          }
-        ]
-      };
-    }
-    
-    case "create-mobile-app": {
-      const purpose = args?.purpose || "";
-      const screens = args?.screens || "login, home, profile, settings";
-      
-      return {
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text: `Design a mobile app with the following purpose: ${purpose}\n\nPlease create these screens: ${screens}\n\nEnsure the design is mobile-friendly with appropriate UI elements and navigation patterns.`
-            }
-          }
-        ]
-      };
-    }
-    
-    case "design-component-system": {
-      const brandName = args?.brandName || "";
-      const primaryColor = args?.primaryColor || "#4285F4";
-      
-      return {
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text: `Create a design system for ${brandName} with primary color ${primaryColor}.\n\nPlease include:\n- Color palette (primary, secondary, neutrals)\n- Typography scale\n- Button states\n- Form elements\n- Cards and containers`
-            }
-          }
-        ]
-      };
-    }
-    
-    default:
-      throw new Error(`Prompt not found: ${name}`);
-  }
-});
-
+// Update the main server function
 async function runServer() {
   try {
-    console.error("Starting Figma MCP Server...");
+    // Initialize plugin
+    const plugin = await initializePlugin();
     
-    // First, set up the server transport
+    // Log server mode
+    if (useRealMode) {
+      logger.info(`Server running in WebSocket mode on ${wsHost}:${wsPort}`);
+      logger.info('WebSocket server is ready for Figma plugin connections');
+      logger.info('Connect from Figma plugin UI using the WebSocket URL');
+    } else {
+      logger.info('Server running in Stdio mode (mock)');
+      logger.info('To connect Claude to this MCP server:');
+      logger.info('1. In Claude\'s MCP inspector, select "Stdio" transport');
+      logger.info('2. Enter command: "node dist/index.js" (local) or use Docker command');
+    }
+    
+    // Create MCP server
+    const server = new Server(
+      {
+        name: "figma-mcp-server",
+        version: "0.1.0",
+        vendor: "Custom Figma Plugin",
+      },
+      {
+        capabilities: {
+          tools: {
+            list: true,
+            call: true,
+          },
+          prompts: {
+            list: true,
+            get: true,
+          },
+        },
+      }
+    );
+    
+    // Connect plugin to server
+    plugin.connectToMCPServer(server);
+    
+    // Always connect the stdio transport so Claude can communicate with the server
+    // regardless of whether we're also using WebSockets for Figma
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("MCP Server connected to stdio transport");
+    logger.info('Connected to stdio transport for Claude communication');
     
-    // Then initialize the plugin bridge
-    await initializePlugin();
+    // Log operating mode
+    if (useRealMode) {
+      logger.info('WebSocket server is also enabled for Figma plugin connections');
+      logger.info(`Figma plugin should connect to: ws://localhost:${wsPort}`);
+    }
     
-    console.error("Figma MCP Server running and ready to accept commands");
+    // Log available tools
+    logger.info('Available tools:', { 
+      tools: [
+        CREATE_FRAME_TOOL.name,
+        CREATE_COMPONENT_TOOL.name,
+        STYLE_DESIGN_TOOL.name,
+        PROMPT_TO_DESIGN_TOOL.name,
+        EXPORT_DESIGN_TOOL.name
+      ]
+    });
     
-    // Log information about available tools
-    console.error(`Available tools: ${[
-      CREATE_FRAME_TOOL.name,
-      CREATE_COMPONENT_TOOL.name, 
-      STYLE_DESIGN_TOOL.name, 
-      PROMPT_TO_DESIGN_TOOL.name, 
-      EXPORT_DESIGN_TOOL.name
-    ].join(', ')}`);
+    // Register tools handlers
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
+      return {
+        tools: [
+          CREATE_FRAME_TOOL,
+          CREATE_COMPONENT_TOOL,
+          STYLE_DESIGN_TOOL,
+          PROMPT_TO_DESIGN_TOOL,
+          EXPORT_DESIGN_TOOL
+        ],
+      };
+    });
+    
+    server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
+      try {
+        const { name, arguments: args } = request.params;
+        logger.info('Handling tool call request', { toolName: name });
+        
+        if (!args) {
+          logger.warn('No arguments provided for tool call', { toolName: name });
+          throw new Error("No arguments provided");
+        }
+
+        switch (name) {
+          case "create_figma_frame": {
+            if (!isCreateFrameArgs(args)) {
+              logger.warn('Invalid arguments for create_figma_frame', { args });
+              throw new Error("Invalid arguments for create_figma_frame");
+            }
+            const { name, width = 1920, height = 1080, background = "#FFFFFF" } = args;
+            
+            try {
+              const frameId = await createFigmaFrame(name, width, height, background);
+              logger.info('create_figma_frame tool completed successfully', { frameId });
+              return {
+                content: [{ 
+                  type: "text", 
+                  text: `Successfully created frame "${name}" (${width}x${height}) with ID: ${frameId}` 
+                }],
+                isError: false,
+              };
+            } catch (error) {
+              return {
+                content: [{ 
+                  type: "text", 
+                  text: `Error creating frame: ${error instanceof Error ? error.message : String(error)}` 
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          case "create_figma_component": {
+            if (!isCreateComponentArgs(args)) {
+              throw new Error("Invalid arguments for create_figma_component");
+            }
+            const { type, description, style = "modern", parentNodeId } = args;
+            
+            try {
+              const componentId = await createFigmaComponent(type, description, style, parentNodeId);
+            return {
+                content: [{ 
+                  type: "text", 
+                  text: `Successfully created ${type} component with ID: ${componentId}` 
+                }],
+              isError: false,
+            };
+            } catch (error) {
+            return {
+                content: [{ 
+                  type: "text", 
+                  text: `Error creating component: ${error instanceof Error ? error.message : String(error)}` 
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          case "style_figma_node": {
+            if (!isStyleNodeArgs(args)) {
+              throw new Error("Invalid arguments for style_figma_node");
+            }
+            const { nodeId, styleDescription, fillColor, strokeColor, textProperties } = args;
+            
+            try {
+              const styledNodeId = await styleFigmaNode(styleDescription, nodeId, fillColor, strokeColor, textProperties);
+            return {
+                content: [{ 
+                  type: "text", 
+                  text: `Successfully styled node with ID: ${styledNodeId}` 
+                }],
+              isError: false,
+            };
+            } catch (error) {
+              return {
+                content: [{ 
+                  type: "text", 
+                  text: `Error styling node: ${error instanceof Error ? error.message : String(error)}` 
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          case "generate_figma_design": {
+            if (!isGenerateDesignArgs(args)) {
+              throw new Error("Invalid arguments for generate_figma_design");
+            }
+            const { prompt, type, style = "modern" } = args;
+            
+            try {
+              const designId = await generateFigmaDesign(prompt, type, style);
+            return {
+                content: [{ 
+                  type: "text", 
+                  text: `Successfully generated ${type} design based on prompt with root frame ID: ${designId}` 
+                }],
+              isError: false,
+            };
+            } catch (error) {
+            return {
+                content: [{ 
+                  type: "text", 
+                  text: `Error generating design: ${error instanceof Error ? error.message : String(error)}` 
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          case "export_figma_design": {
+            if (!isExportDesignArgs(args)) {
+              throw new Error("Invalid arguments for export_figma_design");
+            }
+            const { nodeId, format = "png", scale = 1, includeBackground = true } = args;
+            
+            try {
+              const exportUrl = await exportFigmaDesign(nodeId, format, scale, includeBackground);
+            return {
+                content: [{ 
+                  type: "text", 
+                  text: `Successfully exported design: ${exportUrl}` 
+                }],
+              isError: false,
+            };
+            } catch (error) {
+              return {
+                content: [{ 
+                  type: "text", 
+                  text: `Error exporting design: ${error instanceof Error ? error.message : String(error)}` 
+                }],
+                isError: true,
+              };
+            }
+          }
+
+          default:
+            logger.warn('Unknown tool requested', { toolName: name });
+            return {
+              content: [{ type: "text", text: `Unknown tool: ${name}` }],
+              isError: true,
+            };
+        }
+      } catch (error) {
+        logger.error('Error handling tool call', error as Error);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    });
+    
+    // Register prompts
+    server.setRequestHandler(ListPromptsRequestSchema, async () => {
+      return {
+        prompts: PROMPTS
+      };
+    });
+    
+    server.setRequestHandler(GetPromptRequestSchema, async (request: any) => {
+      const { name, arguments: args } = request.params;
+      logger.info('Handling GetPrompt request', { promptName: name });
+      
+      try {
+        switch (name) {
+          case "create-website-design": {
+            const description = args?.description || "";
+            const style = args?.style || "modern";
+            
+            return {
+              messages: [
+                {
+                  role: "user",
+                  content: {
+                    type: "text",
+                    text: `Create a website design with the following details:\n\nDescription: ${description}\nStyle: ${style}\n\nPlease generate a clean, professional design that includes navigation, hero section, content blocks, and footer.`
+                  }
+                }
+              ]
+            };
+          }
+          
+          case "create-mobile-app": {
+            const purpose = args?.purpose || "";
+            const screens = args?.screens || "login, home, profile, settings";
+            
+            return {
+              messages: [
+                {
+                  role: "user",
+                  content: {
+                    type: "text",
+                    text: `Design a mobile app with the following purpose: ${purpose}\n\nPlease create these screens: ${screens}\n\nEnsure the design is mobile-friendly with appropriate UI elements and navigation patterns.`
+                  }
+                }
+              ]
+            };
+          }
+          
+          case "design-component-system": {
+            const brandName = args?.brandName || "";
+            const primaryColor = args?.primaryColor || "#4285F4";
+            
+            return {
+              messages: [
+                {
+                  role: "user",
+                  content: {
+                    type: "text",
+                    text: `Create a design system for ${brandName} with primary color ${primaryColor}.\n\nPlease include:\n- Color palette (primary, secondary, neutrals)\n- Typography scale\n- Button states\n- Form elements\n- Cards and containers`
+                  }
+                }
+              ]
+            };
+          }
+          
+          default:
+            const errorMsg = `Prompt not found: ${name}`;
+            logger.warn('Prompt not found', { promptName: name });
+            throw new Error(errorMsg);
+        }
+      } catch (error) {
+        logger.error('Error handling GetPrompt request', error as Error);
+        throw error; // Let the MCP SDK handle the error response
+      }
+    });
+    
+    // Register progress handler
+    server.setNotificationHandler(ProgressNotificationSchema, (notification: any) => {
+      const { toolCallId, progress } = notification.params;
+      logger.info('Tool call progress notification', { toolCallId, progress });
+    });
+    
+    logger.info('Figma MCP Server started successfully');
   } catch (error) {
-    console.error("Error starting server:", error);
+    logger.error('Failed to start server', error as Error);
     process.exit(1);
   }
 }
 
-// Handle shutdown
-process.on('SIGINT', () => {
-  console.error('Shutting down Figma MCP server...');
-  if (pluginBridge) {
-    pluginBridge.shutdown();
-  }
-  process.exit(0);
-});
-
-runServer().catch((error) => {
-  console.error("Fatal error running server:", error);
-  process.exit(1);
-});
+// Run the server
+runServer();

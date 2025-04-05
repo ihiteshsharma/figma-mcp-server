@@ -9,6 +9,67 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as http from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
+
+
+// Define a simple logger that won't interfere with StdioServerTransport
+class BridgeLogger {
+  private prefix: string;
+  private debugMode: boolean;
+
+  constructor(prefix: string = 'FIGMA_PLUGIN_BRIDGE') {
+    this.prefix = prefix;
+    this.debugMode = process.env.DEBUG === 'true';
+  }
+
+  private writeLog(level: string, message: string, data?: any): void {
+    const timestamp = new Date().toISOString();
+    const logObject = {
+      timestamp,
+      level,
+      component: this.prefix,
+      message,
+      ...(data ? { data } : {})
+    };
+
+    // Write to stderr with prefix to avoid interfering with JSON-RPC
+    process.stderr.write(`${this.prefix}_LOG: ${JSON.stringify(logObject)}\n`);
+    
+    // Additional console output for local debugging if needed
+    if (this.debugMode && process.env.NODE_ENV !== 'production') {
+      console.log(`DEBUG ${level.toUpperCase()}: ${message}`);
+    }
+  }
+
+  log(message: string, data?: any): void {
+    this.writeLog('info', message, data);
+  }
+
+  warn(message: string, data?: any): void {
+    this.writeLog('warn', message, data);
+  }
+
+  error(message: string, error?: Error, data?: any): void {
+    const errorData = error ? {
+      message: error.message,
+      ...(process.env.NODE_ENV !== 'production' ? { stack: error.stack } : {})
+    } : undefined;
+    
+    this.writeLog('error', message, {
+      ...(data || {}),
+      error: errorData
+    });
+  }
+
+  debug(message: string, data?: any): void {
+    if (process.env.NODE_ENV !== 'production' || this.debugMode) {
+      this.writeLog('debug', message, data);
+    }
+  }
+}
+// Create a singleton logger
+const logger = new BridgeLogger();
 
 // Define message types for plugin communication
 export type PluginCommand = 
@@ -45,11 +106,14 @@ interface SessionContext {
 // Class to manage communication with the Figma plugin
 export class PluginBridge {
   private static instance: PluginBridge;
-  private pluginProcess: ChildProcess | null = null;
   private responseCallbacks: Map<string, (response: PluginResponse) => void> = new Map();
-  private messageBuffer: string = '';
   private messageId: number = 0;
   private isMockMode: boolean = true;
+  private wsServer: WebSocketServer | null = null;
+  private httpServer: http.Server | null = null;
+  private wsConnections: Set<WebSocket> = new Set();
+  private isServerRunning: boolean = false;
+  private webSocketPort: number = 9000; // Default port for WebSocket server
   
   // Add session tracking to maintain context between commands
   private sessionContext: SessionContext = {
@@ -71,95 +135,131 @@ export class PluginBridge {
   }
 
   // Initialize the plugin bridge
-  public async initialize(mockMode: boolean = true): Promise<void> {
+  public async initialize(mockMode: boolean = true, port: number = 9000): Promise<void> {
     this.isMockMode = mockMode;
+    this.webSocketPort = port;
     
     try {
       if (mockMode) {
-        console.log('Initializing plugin bridge in mock mode...');
-        console.log('Plugin bridge initialized in mock mode');
+        logger.log('Initializing plugin bridge in mock mode...');
+        logger.log('Plugin bridge initialized in mock mode');
         return Promise.resolve();
       } else {
-        console.log('Initializing plugin bridge in real mode...');
+        logger.log('Initializing plugin bridge in real mode with WebSockets...');
         
-        // Check if Figma CLI is installed
-        let figmaCliInstalled = false;
+        // Start WebSocket server for real-time communication with the Figma plugin
+        await this.startWebSocketServer(this.webSocketPort);
         
-        try {
-          // Try to execute figma --version
-          const childProcess = spawn('figma', ['--version']);
-          await new Promise<void>((resolve) => {
-            childProcess.on('close', (code) => {
-              figmaCliInstalled = code === 0;
-              resolve();
-            });
-          });
-        } catch (e) {
-          console.warn('Could not check for Figma CLI: ', e);
-        }
-        
-        if (figmaCliInstalled) {
-          console.log('Figma CLI detected, attempting to connect to plugin...');
-          // Path to the plugin directory
-          const pluginDir = path.resolve(__dirname, '../figma-plugin');
-          
-          if (!fs.existsSync(pluginDir)) {
-            throw new Error(`Plugin directory not found: ${pluginDir}`);
-          }
-          
-          // Try to run the plugin using Figma CLI
-          try {
-            // Launch the Figma plugin in a separate process
-            this.pluginProcess = spawn('figma', ['run', '--target=plugin', '--verbose', pluginDir]);
-            
-            // Handle process output
-            if (this.pluginProcess.stdout) {
-              this.pluginProcess.stdout.on('data', (data: Buffer) => {
-                const output = data.toString();
-                console.log('Plugin output:', output);
-                this.handlePluginOutput(output);
-              });
-            }
-            
-            if (this.pluginProcess.stderr) {
-              this.pluginProcess.stderr.on('data', (data: Buffer) => {
-                console.error('Plugin error:', data.toString());
-              });
-            }
-            
-            this.pluginProcess.on('close', (code) => {
-              console.log(`Plugin process exited with code ${code}`);
-              this.pluginProcess = null;
-            });
-            
-            console.log('Figma plugin process started');
-          } catch (error) {
-            console.error('Failed to start Figma plugin process:', error);
-            this.pluginProcess = null;
-          }
-        } else {
-          console.warn('Figma CLI not found. You will need to run the plugin manually in Figma.');
-          console.warn(`
+        logger.log(`Plugin bridge initialized in real mode with WebSocket server on port ${this.webSocketPort}`);
+        logger.log(`
 ==============================================================
-MANUAL PLUGIN ACTIVATION REQUIRED
+FIGMA PLUGIN CONNECTION INSTRUCTIONS
 --------------------------------------------------------------
 To connect with the Figma plugin:
 
-1. Open the Figma desktop application
-2. Open a design file (or create a new one)
-3. Run the Figma MCP Server plugin from the plugins menu
-4. The plugin UI will appear and start receiving commands
+1. Make sure your Figma plugin's UI.html file has WebSocket client code
+2. The plugin should connect to: ws://localhost:${this.webSocketPort}
+3. Keep the Figma plugin window open to maintain connection
+4. The connection status will be shown in the plugin UI
 ==============================================================
-          `);
-        }
+        `);
         
-        console.log('Plugin bridge initialized in real mode');
         return Promise.resolve();
       }
     } catch (error) {
-      console.error('Failed to initialize plugin bridge:', error);
+      logger.error('Failed to initialize plugin bridge', error as Error);
       throw error;
     }
+  }
+
+  // Start WebSocket server for real-time communication
+  private async startWebSocketServer(port: number): Promise<void> {
+    if (this.isServerRunning) {
+      logger.log('WebSocket server is already running');
+      return;
+    }
+    
+    return new Promise((resolve, reject) => {
+      try {
+        // Create HTTP server first
+        this.httpServer = http.createServer();
+        
+        // Create WebSocket server - explicitly set host to listen on IPv4
+        this.wsServer = new WebSocketServer({ 
+          server: this.httpServer,
+          host: process.env.WS_HOST || '0.0.0.0' // Force IPv4 binding
+        });
+        
+        // Handle WebSocket connections
+        this.wsServer.on('connection', (ws: WebSocket) => {
+          logger.log('New WebSocket connection established with Figma plugin');
+          
+          // Add to active connections
+          this.wsConnections.add(ws);
+          
+          // Handle messages from Figma plugin
+          ws.on('message', (data: WebSocket.Data) => {
+            try {
+              const message = JSON.parse(data.toString());
+              logger.debug('Received message from Figma plugin', { message });
+              
+              // If it's a response to a command
+              if (message._isResponse && message.id && this.responseCallbacks.has(message.id)) {
+                const callback = this.responseCallbacks.get(message.id);
+                if (callback) {
+                  // Update session context from response
+                  this.updateSessionFromResponse(message);
+                  
+                  // Call the callback with the response
+                  callback(message);
+                  this.responseCallbacks.delete(message.id);
+                }
+              } else {
+                logger.debug('Received non-response message', { message });
+              }
+            } catch (error) {
+              logger.error('Error handling WebSocket message', error as Error);
+            }
+          });
+          
+          // Handle WebSocket errors
+          ws.on('error', (error: Error) => {
+            logger.error('WebSocket error', error);
+          });
+          
+          // Handle WebSocket close
+          ws.on('close', () => {
+            logger.log('WebSocket connection closed');
+            this.wsConnections.delete(ws);
+          });
+          
+          // Send a test message to verify connection
+          ws.send(JSON.stringify({ type: 'CONNECTION_TEST', status: 'connected' }));
+        });
+        
+        // Handle WebSocket server errors
+        this.wsServer.on('error', (error) => {
+          logger.error('WebSocket server error', error as Error);
+          reject(error);
+        });
+        
+        // Start HTTP server
+        this.httpServer.listen(port, process.env.WS_HOST || '0.0.0.0', () => {
+          logger.log(`WebSocket server listening on port ${port}`);
+          this.isServerRunning = true;
+          resolve();
+        });
+        
+        // Handle HTTP server errors
+        this.httpServer.on('error', (error) => {
+          logger.error('HTTP server error', error as Error);
+          reject(error);
+        });
+      } catch (error) {
+        logger.error('Failed to start WebSocket server', error as Error);
+        reject(error);
+      }
+    });
   }
 
   // Send a command to the Figma plugin
@@ -175,7 +275,7 @@ To connect with the Figma plugin:
     if (this.isMockMode) {
       // Mock mode implementation
       return new Promise((resolve) => {
-        console.log(`Mock plugin received command: ${command.type}`);
+        logger.log(`Mock plugin received command: ${command.type}`, { commandId: command.id });
         
         // Simulate a successful response with mock data
         const mockResponse: any = this.createMockResponse(command);
@@ -192,74 +292,58 @@ To connect with the Figma plugin:
         }, 300); // Add a small delay to simulate processing
       });
     } else {
-      // Real mode implementation
+      // Real mode implementation with WebSockets
       return new Promise((resolve, reject) => {
         try {
-          console.log(`Sending real command to Figma plugin: ${command.type}`);
+          logger.log(`Sending real command to Figma plugin: ${command.type}`, { commandId: command.id });
           
-          // In real mode, we need to establish a connection to the actual Figma plugin
-          // Since Figma plugins run in the browser and not as standalone processes,
-          // we need to find an alternative approach
-          
-          // Option 1: Use Figma Plugin CLI if available
-          if (this.pluginProcess) {
-            console.log(`Sending command via plugin process: ${command.type}`);
+          // Check if we have any WebSocket connections
+          if (this.wsConnections.size === 0) {
+            logger.warn('No active WebSocket connections to Figma plugin');
+            logger.warn('Falling back to mock response for now');
             
-            // Store the callback to handle the response
-            const callback = (response: PluginResponse) => {
-              // Update session context from the response
-              this.updateSessionFromResponse(response);
-              
-              if (response.success) {
-                resolve(response.data as T);
-              } else {
-                reject(new Error(response.error || 'Unknown error'));
-              }
-            };
+            // Fall back to mock mode temporarily
+            const mockResponse: any = this.createMockResponse(command);
+            mockResponse.id = command.id;
+            mockResponse._isMockFallback = true;
             
-            this.responseCallbacks.set(command.id!, callback);
+            // Use a longer timeout to simulate network issues
+            setTimeout(() => {
+              resolve(mockResponse as T);
+            }, 1000);
             
-            // Send the command to the plugin
-            const commandJson = JSON.stringify(command) + '\n';
-            if (this.pluginProcess.stdin) {
-              this.pluginProcess.stdin.write(commandJson);
-            } else {
-              return reject(new Error('Plugin process stdin not available'));
-            }
-            
-            return; // Exit early as we've handled the command
+            return;
           }
           
-          // Option 2: Launch the Figma desktop app with instructions
-          console.log(`
-==========================================================
-REAL FIGMA PLUGIN COMMAND REQUESTED: ${command.type}
-----------------------------------------------------------
-To execute this in Figma:
-
-1. Open Figma desktop app
-2. Run your plugin from the plugins menu
-3. The plugin should now receive and process this command:
-   ${JSON.stringify(command, null, 2)}
-
-The command will be processed when you run the plugin in Figma.
-==========================================================
-          `);
-          
-          // For now, simulate response to allow development without blocking
-          const tempResponse: any = {
-            type: command.type,
-            success: true,
-            data: {},
-            id: command.id
+          // Store the callback to handle the response
+          const callback = (response: PluginResponse) => {
+            // Update session context from the response
+            this.updateSessionFromResponse(response);
+            
+            if (response.success) {
+              resolve(response.data as T);
+            } else {
+              reject(new Error(response.error || 'Unknown error'));
+            }
           };
           
-          // Return simulated data but with a longer delay and a warning
+          this.responseCallbacks.set(command.id!, callback);
+          
+          // Broadcast command to all connected WebSocket clients (usually just one)
+          const commandJson = JSON.stringify(command);
+          this.wsConnections.forEach((ws) => {
+            ws.send(commandJson);
+          });
+          
+          // Set a timeout for response
           setTimeout(() => {
-            console.warn(`⚠️ USING SIMULATED RESPONSE - Plugin communication not fully implemented!`);
-            console.warn(`⚠️ Open Figma and run the plugin for real results`);
-            resolve(tempResponse as T);
-          }, 2000);
+            if (this.responseCallbacks.has(command.id!)) {
+              logger.warn(`Command ${command.id} timed out`);
+              this.responseCallbacks.delete(command.id!);
+              reject(new Error(`Command ${command.type} timed out`));
+            }
+          }, 30000); // 30 second timeout
+          
         } catch (error) {
           reject(error);
         }
@@ -286,12 +370,12 @@ The command will be processed when you run the plugin in Figma.
       // For ADD_ELEMENT, if no parent is specified, use the active page
       if (command.type === 'ADD_ELEMENT' && !command.payload.parent) {
         command.payload.parent = this.sessionContext.activePageId;
-        console.log(`Using active page ${this.sessionContext.activePageId} as parent for ADD_ELEMENT`);
+        logger.debug(`Using active page ${this.sessionContext.activePageId} as parent for ADD_ELEMENT`);
       }
       
       // For STYLE_ELEMENT, if no elementId is specified, include the active page context
       if (command.type === 'STYLE_ELEMENT' && !command.payload.elementId) {
-        console.log(`Including active page ${this.sessionContext.activePageId} context for STYLE_ELEMENT`);
+        logger.debug(`Including active page ${this.sessionContext.activePageId} context for STYLE_ELEMENT`);
       }
     }
   }
@@ -305,18 +389,18 @@ The command will be processed when you run the plugin in Figma.
     // Update active IDs if present in the response
     if (data.activePageId) {
       this.sessionContext.activePageId = data.activePageId;
-      console.log(`Session context updated: activePageId = ${data.activePageId}`);
+      logger.debug(`Session context updated: activePageId = ${data.activePageId}`);
     }
     
     if (data.activeWireframeId) {
       this.sessionContext.activeWireframeId = data.activeWireframeId;
-      console.log(`Session context updated: activeWireframeId = ${data.activeWireframeId}`);
+      logger.debug(`Session context updated: activeWireframeId = ${data.activeWireframeId}`);
     }
     
     // Update wireframes list if present
     if (data.wireframes) {
       this.sessionContext.wireframes = data.wireframes;
-      console.log(`Session context updated: ${data.wireframes.length} wireframes`);
+      logger.debug(`Session context updated: ${data.wireframes.length} wireframes`);
     }
     
     // Update for specific command types
@@ -342,7 +426,7 @@ The command will be processed when you run the plugin in Figma.
             });
           }
           
-          console.log(`Added wireframe ${data.wireframeId} with ${data.pageIds.length} pages to session context`);
+          logger.debug(`Added wireframe ${data.wireframeId} with ${data.pageIds.length} pages to session context`);
         }
         break;
     }
@@ -449,64 +533,58 @@ The command will be processed when you run the plugin in Figma.
     return { ...this.sessionContext };
   }
 
-  // Process output from the plugin
-  private handlePluginOutput(data: string): void {
-    // Add new data to the buffer
-    this.messageBuffer += data;
-    
-    // Process complete messages (separated by newlines)
-    const lines = this.messageBuffer.split('\n');
-    
-    // Keep the last incomplete line in the buffer
-    this.messageBuffer = lines.pop() || '';
-    
-    // Process each complete line
-    for (const line of lines) {
-      if (line.trim()) {
-        try {
-          const response = JSON.parse(line) as PluginResponse;
-          
-          // If there's a response ID, call the corresponding callback
-          if (response.id && this.responseCallbacks.has(response.id)) {
-            const callback = this.responseCallbacks.get(response.id);
-            if (callback) {
-              callback(response);
-              this.responseCallbacks.delete(response.id);
-            }
-          } else {
-            console.log('Received message without callback:', response);
-          }
-        } catch (error) {
-          console.error('Error parsing plugin response:', error, 'Raw data:', line);
-        }
-      }
-    }
-  }
-
   // Generate a unique ID for each command
   private generateId(): string {
     return `cmd_${Date.now()}_${this.messageId++}`;
   }
 
-  // Check if Figma CLI is installed - replaced with mock implementation
-  private async isFigmaCliInstalled(): Promise<boolean> {
-    // Always return true since we're using a mock approach
-    return Promise.resolve(true);
-  }
-
   // Clean up resources when shutting down
   public shutdown(): void {
-    console.log('Shutting down plugin bridge...');
+    logger.log('Shutting down plugin bridge...');
     
-    if (this.pluginProcess) {
-      console.log('Terminating Figma plugin process');
-      this.pluginProcess.kill();
-      this.pluginProcess = null;
+    // Close all WebSocket connections
+    if (this.wsConnections.size > 0) {
+      logger.log(`Closing ${this.wsConnections.size} WebSocket connections`);
+      this.wsConnections.forEach((ws: WebSocket) => {
+        try {
+          ws.close();
+        } catch (error: unknown) {
+          logger.error('Error closing WebSocket connection', error as Error);
+        }
+      });
+      this.wsConnections.clear();
+    }
+    
+    // Close WebSocket server
+    if (this.wsServer) {
+      logger.log('Closing WebSocket server');
+      this.wsServer.close((error?: Error) => {
+        if (error) {
+          logger.error('Error closing WebSocket server', error);
+        } else {
+          logger.log('WebSocket server closed');
+        }
+      });
+      this.wsServer = null;
+    }
+    
+    // Close HTTP server
+    if (this.httpServer) {
+      logger.log('Closing HTTP server');
+      this.httpServer.close((error?: Error) => {
+        if (error) {
+          logger.error('Error closing HTTP server', error);
+        } else {
+          logger.log('HTTP server closed');
+        }
+      });
+      this.httpServer = null;
     }
     
     // Clear any pending callbacks
     this.responseCallbacks.clear();
-    console.log('Plugin bridge shut down');
+    this.isServerRunning = false;
+    logger.log('Plugin bridge shut down');
   }
 
   /**
@@ -514,20 +592,11 @@ The command will be processed when you run the plugin in Figma.
    * This method should be called by the MCP server to establish communication.
    */
   public connectToMCPServer(server: any): void {
-    console.log('Connecting MCP server to Figma plugin...');
+    logger.log('Connecting MCP server to Figma plugin...');
     
-    // If we're in real mode, we'd set up direct communication here
-    if (!this.isMockMode && this.pluginProcess) {
-      console.log('Setting up real communication between MCP server and Figma plugin');
-      
-      // In a real implementation, we'd set up event handlers here
-      // to forward messages between the MCP server and the Figma plugin
-    } else {
-      console.log('Using mock mode for MCP server to Figma plugin communication');
-      
-      // In mock mode, we don't need to do anything special
-      // as the sendCommand method will handle everything
-    }
+    // Nothing special needs to be done here as the WebSocket server
+    // is already running in real mode
+    logger.log('Plugin bridge ready for MCP server integration');
   }
 }
 
@@ -545,7 +614,7 @@ export async function sendPluginCommand<T>(command: PluginCommand): Promise<T> {
     command.id = `cmd_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
   }
   
-  console.log(`Sending command to plugin: ${command.type}`, command);
+  logger.log(`Sending command to plugin: ${command.type}`, command);
   
   const bridge = getPluginBridge();
   return bridge.sendCommand<T>(command);
@@ -568,56 +637,15 @@ export async function getCurrentPage(): Promise<any> {
 }
 
 // Export a function to initialize the plugin bridge and connect to the MCP server
-export async function initializePluginBridge(server: any, useMockMode: boolean = true): Promise<PluginBridge> {
+export async function initializePluginBridge(server: any, useMockMode: boolean = true, port: number = 9000): Promise<PluginBridge> {
   const bridge = getPluginBridge();
   
   try {
-    await bridge.initialize(useMockMode);
+    await bridge.initialize(useMockMode, port);
     bridge.connectToMCPServer(server);
     return bridge;
   } catch (error) {
-    console.error('Failed to initialize plugin bridge:', error);
-    throw error;
-  }
-}
-
-/**
- * Alternative approach to communicate with Figma plugin using a local web server
- * 
- * To use this approach:
- * 1. Run the MCP server with real mode
- * 2. The server will start a WebSocket server
- * 3. Open Figma and run the plugin
- * 4. The plugin will connect to the WebSocket server
- * 5. Commands and responses will be sent over the WebSocket connection
- */
-export async function startWebSocketServer(port: number = 8080): Promise<void> {
-  try {
-    // This is a placeholder for implementing WebSocket communication
-    // In a real implementation, you would:
-    // 1. Start a WebSocket server on the specified port
-    // 2. Accept connections from the Figma plugin
-    // 3. Exchange messages between the MCP server and the plugin
-    
-    console.log(`
-==============================================================
-WEBSOCKET SERVER MODE
---------------------------------------------------------------
-To connect with the Figma plugin via WebSocket:
-
-1. Add WebSocket client code to your Figma plugin
-2. Connect to ws://localhost:${port} from the plugin
-3. Exchange messages using the same format as the existing API
-4. Handle responses in both the plugin and the MCP server
-==============================================================
-    `);
-    
-    // This would be implemented with a WebSocket server library
-    // For example using 'ws' or 'socket.io'
-    
-    return Promise.resolve();
-  } catch (error) {
-    console.error('Failed to start WebSocket server:', error);
+    logger.error('Failed to initialize plugin bridge', error as Error);
     throw error;
   }
 } 

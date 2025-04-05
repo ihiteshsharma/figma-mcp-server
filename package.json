@@ -23,7 +23,9 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.1.0"
+    "@modelcontextprotocol/sdk": "^1.1.0",
+    "@types/ws": "^8.18.1",
+    "ws": "^8.18.1"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.109.0",

@@ -123,6 +123,38 @@
     button:hover {
       background-color: #2A8FC7;
     }
+
+    .ws-controls {
+      margin-top: 15px;
+      padding: 10px;
+      background-color: #F0F7FF;
+      border-radius: 6px;
+    }
+    
+    .ws-status {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    
+    .ws-indicator {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 10px;
+    }
+    
+    .ws-connected {
+      background-color: #6FCF97;
+    }
+    
+    .ws-disconnected {
+      background-color: #EB5757;
+    }
+    
+    .ws-connecting {
+      background-color: #F2994A;
+    }
   </style>
 </head>
 <body>
@@ -137,6 +169,21 @@
     <div><strong>Mode:</strong> <span id="mode">Direct</span></div>
     <div><strong>Plugin ID:</strong> <span id="plugin-id">Loading...</span></div>
     <div><strong>Current Page:</strong> <span id="current-page">Loading...</span></div>
+  </div>
+  
+  <!-- WebSocket Connection UI -->
+  <div id="ws-controls" class="ws-controls">
+    <h3>MCP Server Connection</h3>
+    <div class="ws-status">
+      <div id="ws-indicator" class="ws-indicator ws-disconnected"></div>
+      <div id="ws-status-text">Disconnected</div>
+    </div>
+    <div class="input-group">
+      <label for="ws-url">WebSocket URL</label>
+      <input type="text" id="ws-url" value="ws://localhost:9000" />
+    </div>
+    <button id="ws-connect">Connect to MCP Server</button>
+    <button id="ws-disconnect" style="display: none;">Disconnect</button>
   </div>
   
   <div id="messages">
@@ -191,8 +238,197 @@
     const pluginIdElement = document.getElementById('plugin-id');
     const currentPageElement = document.getElementById('current-page');
     
+    // WebSocket UI elements
+    const wsUrlInput = document.getElementById('ws-url');
+    const wsConnectButton = document.getElementById('ws-connect');
+    const wsDisconnectButton = document.getElementById('ws-disconnect');
+    const wsIndicator = document.getElementById('ws-indicator');
+    const wsStatusText = document.getElementById('ws-status-text');
+    
+    // WebSocket connection
+    let webSocket = null;
+    let wsConnectionActive = false;
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 5;
+    let reconnectTimeout = null;
+    
     // Set initial status
     updateStatus('Ready', '#2D9CDB');
+    
+    // Initialize
+    window.onload = function() {
+      // Tell the plugin that the UI is ready
+      parent.postMessage({ pluginMessage: { type: 'UI_READY' } }, '*');
+      
+      // Get plugin info
+      updatePluginInfo();
+    };
+    
+    // Listen for messages from the plugin
+    window.onmessage = function(event) {
+      if (event.data.pluginMessage) {
+        const message = event.data.pluginMessage;
+        console.log('Message from plugin:', message);
+        
+        // If it's not a response message (to avoid circular handling)
+        if (!message._isResponse) {
+          handlePluginMessage(message);
+        } else {
+          // If it's a response and websocket is active, forward it to the MCP server
+          if (wsConnectionActive && webSocket) {
+            console.log('Forwarding response to MCP server via WebSocket');
+            webSocket.send(JSON.stringify(message));
+          }
+          
+          // Also display the response in the UI
+          displayMessage('Response', JSON.stringify(message, null, 2), message.success ? 'success' : 'error');
+        }
+      }
+    };
+    
+    // Handle connecting to WebSocket server
+    wsConnectButton.addEventListener('click', function() {
+      const url = wsUrlInput.value.trim();
+      if (!url) {
+        alert('Please enter a WebSocket URL');
+        return;
+      }
+      
+      connectToWebSocket(url);
+    });
+    
+    // Handle disconnecting from WebSocket server
+    wsDisconnectButton.addEventListener('click', function() {
+      disconnectWebSocket();
+    });
+    
+    // Connect to WebSocket server
+    function connectToWebSocket(url) {
+      updateWsStatus('connecting');
+      
+      try {
+        // Create WebSocket connection
+        webSocket = new WebSocket(url);
+        
+        // Connection opened
+        webSocket.addEventListener('open', function(event) {
+          wsConnectionActive = true;
+          reconnectAttempts = 0;
+          updateWsStatus('connected');
+          console.log('Connected to MCP server via WebSocket');
+          
+          // Send initial message to identify as Figma plugin
+          webSocket.send(JSON.stringify({ 
+            type: 'PLUGIN_CONNECTED',
+            data: {
+              pluginId: parent.figma ? parent.figma.root.id : 'unknown',
+              currentPage: parent.figma ? parent.figma.currentPage.name : 'unknown'
+            }
+          }));
+        });
+        
+        // Listen for messages from the server
+        webSocket.addEventListener('message', function(event) {
+          console.log('Message from MCP server:', event.data);
+          
+          try {
+            const message = JSON.parse(event.data);
+            
+            // Check if this is a test message or an actual command
+            if (message.type === 'CONNECTION_TEST') {
+              displayMessage('Server Connection', 'Successfully connected to MCP server', 'success');
+              return;
+            }
+            
+            // Display the message
+            displayMessage('Command from MCP', JSON.stringify(message, null, 2));
+            
+            // Forward the message to the plugin
+            parent.postMessage({ pluginMessage: message }, '*');
+          } catch (error) {
+            console.error('Error handling WebSocket message:', error);
+            displayMessage('WebSocket Error', error.message, 'error');
+          }
+        });
+        
+        // Handle errors
+        webSocket.addEventListener('error', function(event) {
+          console.error('WebSocket error:', event);
+          displayMessage('WebSocket Error', 'Connection error', 'error');
+          wsConnectionActive = false;
+          updateWsStatus('disconnected');
+        });
+        
+        // Handle connection close
+        webSocket.addEventListener('close', function(event) {
+          console.log('WebSocket connection closed:', event.code, event.reason);
+          wsConnectionActive = false;
+          updateWsStatus('disconnected');
+          
+          // Attempt to reconnect if the connection was previously established
+          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempts++;
+            displayMessage('WebSocket', `Connection closed. Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`, 'error');
+            
+            // Try to reconnect after a delay
+            if (reconnectTimeout) {
+              clearTimeout(reconnectTimeout);
+            }
+            reconnectTimeout = setTimeout(() => {
+              connectToWebSocket(url);
+            }, 3000); // Reconnect after 3 seconds
+          } else {
+            displayMessage('WebSocket', 'Connection closed. Max reconnection attempts reached.', 'error');
+          }
+        });
+      } catch (error) {
+        console.error('Error creating WebSocket:', error);
+        displayMessage('WebSocket Error', error.message, 'error');
+        updateWsStatus('disconnected');
+      }
+    }
+    
+    // Disconnect from WebSocket server
+    function disconnectWebSocket() {
+      if (webSocket) {
+        webSocket.close();
+        webSocket = null;
+      }
+      
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
+      
+      wsConnectionActive = false;
+      updateWsStatus('disconnected');
+    }
+    
+    // Update WebSocket status UI
+    function updateWsStatus(status) {
+      wsIndicator.className = 'ws-indicator';
+      
+      switch (status) {
+        case 'connected':
+          wsIndicator.classList.add('ws-connected');
+          wsStatusText.textContent = 'Connected';
+          wsConnectButton.style.display = 'none';
+          wsDisconnectButton.style.display = 'block';
+          break;
+        case 'disconnected':
+          wsIndicator.classList.add('ws-disconnected');
+          wsStatusText.textContent = 'Disconnected';
+          wsConnectButton.style.display = 'block';
+          wsDisconnectButton.style.display = 'none';
+          break;
+        case 'connecting':
+          wsIndicator.classList.add('ws-connecting');
+          wsStatusText.textContent = 'Connecting...';
+          wsConnectButton.style.display = 'none';
+          wsDisconnectButton.style.display = 'block';
+          break;
+      }
+    }
     
     // Update command payload based on selected command type
     commandType.addEventListener('change', () => {
@@ -250,6 +486,8 @@
           };
           break;
         case 'GET_SELECTION':
+          defaultPayload = {};
+          break;
         case 'GET_CURRENT_PAGE':
           defaultPayload = {};
           break;
@@ -258,137 +496,99 @@
       commandPayload.value = JSON.stringify(defaultPayload, null, 2);
     });
     
-    // Execute custom command
+    // Execute command when button is clicked
     executeCommand.addEventListener('click', () => {
       try {
-        let payload = JSON.parse(commandPayload.value);
+        // Parse the payload
+        const payload = JSON.parse(commandPayload.value);
         
-        // Special handling for current selection
-        if (payload.parent === "current-selection" || payload.elementId === "current-selection") {
-          addMessage('INFO', 'info', 'Using current selection as parent/element ID');
-        }
-        
-        // Make sure required fields are present
-        if (commandType.value === 'CREATE_WIREFRAME' && !payload.description) {
-          addMessage('ERROR', 'error', 'Description is required for CREATE_WIREFRAME');
-          return;
-        }
-        
-        // Create the command object with the correct structure
+        // Create the command
         const command = {
           type: commandType.value,
           payload: payload,
-          id: `manual_${Date.now()}`
+          id: 'cmd_' + Date.now()
         };
         
-        // Log the command we're sending for debugging
-        console.log('Sending command to plugin:', command);
+        displayMessage('Sending Command', JSON.stringify(command, null, 2));
         
-        // Create the message object exactly as expected by the plugin
-        const pluginMessage = {
-          type: command.type,
-          payload: command.payload,
-          id: command.id
-        };
-        
-        // Send command to plugin code - make sure we're sending the right structure
-        parent.postMessage({ pluginMessage: pluginMessage }, '*');
-        
-        // Show sent command
-        addMessage('COMMAND_SENT', 'info', 'Command sent to plugin: ' + JSON.stringify(pluginMessage, null, 2));
-        
-        // Update status
-        updateStatus('Processing: ' + commandType.value, '#FFB800');
-      } catch (e) {
-        addMessage('ERROR', 'error', 'Invalid JSON payload: ' + e.message);
+        // If WebSocket is connected, send through WebSocket
+        if (wsConnectionActive && webSocket) {
+          console.log('Sending command via WebSocket:', command);
+          webSocket.send(JSON.stringify(command));
+        } else {
+          // Otherwise send directly to plugin
+          console.log('Sending command directly to plugin:', command);
+          parent.postMessage({ pluginMessage: command }, '*');
+        }
+      } catch (error) {
+        console.error('Error executing command:', error);
+        displayMessage('Error', error.message, 'error');
       }
     });
     
-    // Function to update status
-    function updateStatus(text, color) {
-      statusText.textContent = text;
-      statusDot.style.backgroundColor = color;
+    // Handle messages from the plugin
+    function handlePluginMessage(message) {
+      console.log('Handling plugin message:', message);
+      
+      // If WebSocket is connected, forward the message
+      if (wsConnectionActive && webSocket) {
+        console.log('Forwarding message to MCP server:', message);
+        webSocket.send(JSON.stringify(message));
+      }
+      
+      // Display the message in the UI
+      displayMessage('Message from Plugin', JSON.stringify(message, null, 2));
     }
     
-    // Handle messages from the server
-    window.onmessage = (event) => {
-      const message = event.data.pluginMessage;
+    // Display a message in the UI
+    function displayMessage(title, content, type = '') {
+      const messageElement = document.createElement('div');
+      messageElement.className = 'message' + (type ? ' ' + type : '');
       
-      // Handle the message coming from plugin code
-      if (message) {
-        console.log('UI received message:', message);
-        
-        // Special handling for plugin startup
-        if (message.type === 'PLUGIN_STARTED') {
-          updateStatus('Connected', '#6FCF97');
-          if (message.data) {
-            pluginIdElement.textContent = message.data.pluginId || 'Unknown';
-            currentPageElement.textContent = message.data.currentPage || 'Unknown';
-          }
-          addMessage('STARTUP', 'success', 'Plugin connected and ready');
-          return;
-        }
-        
-        // Special handling for command received
-        if (message.type === 'COMMAND_RECEIVED') {
-          const command = message.data?.command || 'unknown';
-          updateStatus(`Processing: ${command}`, '#FFB800');
-          addMessage(message.type, 'success', `Received command: ${command}`);
-          return;
-        }
-        
-        // Add the message to the UI
-        const messageContent = message.data 
-          ? JSON.stringify(message.data, null, 2) 
-          : message.error || 'No data';
-        
-        addMessage(message.type, message.success ? 'success' : 'error', messageContent);
-        
-        // Update status based on message
-        if (message.success) {
-          updateStatus('Success: ' + message.type, '#6FCF97');
-        } else {
-          updateStatus('Error: ' + message.type, '#EB5757');
-        }
-        
-        // Only send back successful responses to avoid loops
-        if (message.success && !message.type.startsWith('UI_')) {
-          // Send the message back to the plugin code
-          // The plugin code will then send it to the MCP server
-          parent.postMessage({ pluginMessage: message }, '*');
-        }
-      }
-    };
-    
-    // Add a message to the UI
-    function addMessage(type, status, content) {
-      const messageDiv = document.createElement('div');
-      messageDiv.className = `message ${status}`;
-      
-      const header = document.createElement('div');
-      header.className = 'message-header';
-      header.textContent = type;
+      const messageHeader = document.createElement('div');
+      messageHeader.className = 'message-header';
+      messageHeader.textContent = title;
       
       const messageContent = document.createElement('div');
       messageContent.className = 'message-content';
       messageContent.textContent = content;
       
-      messageDiv.appendChild(header);
-      messageDiv.appendChild(messageContent);
+      messageElement.appendChild(messageHeader);
+      messageElement.appendChild(messageContent);
       
-      pluginMessages.appendChild(messageDiv);
+      pluginMessages.insertBefore(messageElement, pluginMessages.firstChild);
       
-      // Limit number of messages to keep UI clean
-      if (pluginMessages.childNodes.length > 10) {
-        pluginMessages.removeChild(pluginMessages.firstChild);
+      // Limit number of messages to 10
+      while (pluginMessages.children.length > 10) {
+        pluginMessages.removeChild(pluginMessages.lastChild);
       }
-      
-      // Scroll to the latest message
-      messageDiv.scrollIntoView({ behavior: 'smooth' });
     }
     
-    // Send a ready message to the plugin
-    parent.postMessage({ pluginMessage: { type: 'UI_READY' } }, '*');
+    // Update status indicator
+    function updateStatus(text, color) {
+      statusText.textContent = text;
+      statusDot.style.backgroundColor = color;
+    }
+    
+    // Get plugin info
+    function updatePluginInfo() {
+      try {
+        // Set plugin ID
+        if (parent.figma) {
+          pluginIdElement.textContent = parent.figma.root.id;
+          
+          // Set current page
+          currentPageElement.textContent = parent.figma.currentPage.name;
+        } else {
+          pluginIdElement.textContent = 'Not available';
+          currentPageElement.textContent = 'Not available';
+        }
+      } catch (error) {
+        console.error('Error getting plugin info:', error);
+        pluginIdElement.textContent = 'Error';
+        currentPageElement.textContent = 'Error';
+      }
+    }
   </script>
 </body>
 </html> 
