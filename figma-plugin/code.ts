@@ -111,6 +111,17 @@ const sessionState = {
     });
     
     return result;
+  },
+  
+  // Add a node to a wireframe
+  addNodeToWireframe(wireframeId: string, node: SceneNode) {
+    if (!wireframeId || !node) return;
+    
+    const wireframe = this.createdPages.get(wireframeId);
+    if (wireframe) {
+      wireframe.pageIds.push(node.id);
+      wireframe.createdAt = Date.now();
+    }
   }
 };
 
@@ -125,6 +136,99 @@ function sendResponse(response: PluginResponse): void {
   
   // Send the message to the UI
   figma.ui.postMessage(response);
+}
+
+/**
+ * Creates a detailed node description for response
+ * This function extracts all relevant properties from a node for detailed feedback
+ */
+function createDetailedNodeResponse(node: SceneNode): any {
+  // Base properties all nodes have
+  const details: any = {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    visible: node.visible,
+  };
+  
+  // Add position data
+  if ('x' in node) details.x = node.x;
+  if ('y' in node) details.y = node.y;
+  
+  // Add size data
+  if ('width' in node) details.width = node.width;
+  if ('height' in node) details.height = node.height;
+  
+  // Add layout properties for container nodes
+  if ('layoutMode' in node) {
+    details.layout = {
+      mode: node.layoutMode,
+      primaryAxisAlignItems: node.primaryAxisAlignItems,
+      counterAxisAlignItems: node.counterAxisAlignItems,
+      itemSpacing: node.itemSpacing,
+      padding: {
+        left: node.paddingLeft,
+        right: node.paddingRight,
+        top: node.paddingTop,
+        bottom: node.paddingBottom
+      }
+    };
+  }
+  
+  // Add style properties common to many nodes
+  if ('fills' in node) {
+    details.fills = node.fills;
+  }
+  
+  if ('strokes' in node) {
+    details.strokes = node.strokes;
+    if ('strokeWeight' in node) details.strokeWeight = node.strokeWeight;
+    if ('strokeAlign' in node) details.strokeAlign = node.strokeAlign;
+  }
+  
+  if ('cornerRadius' in node) {
+    if (node.type === 'RECTANGLE') {
+      details.cornerRadius = {
+        topLeft: (node as RectangleNode).topLeftRadius,
+        topRight: (node as RectangleNode).topRightRadius,
+        bottomRight: (node as RectangleNode).bottomRightRadius,
+        bottomLeft: (node as RectangleNode).bottomLeftRadius
+      };
+    } else {
+      details.cornerRadius = (node as any).cornerRadius;
+    }
+  }
+  
+  if ('effects' in node) {
+    details.effects = node.effects;
+  }
+  
+  // Add text-specific properties
+  if (node.type === 'TEXT') {
+    const textNode = node as TextNode;
+    details.text = {
+      characters: textNode.characters,
+      fontSize: textNode.fontSize,
+      fontName: textNode.fontName,
+      textCase: textNode.textCase,
+      textDecoration: textNode.textDecoration,
+      letterSpacing: textNode.letterSpacing,
+      lineHeight: textNode.lineHeight,
+      textAlignHorizontal: textNode.textAlignHorizontal,
+      textAlignVertical: textNode.textAlignVertical
+    };
+  }
+  
+  // Add parent context
+  if (node.parent) {
+    details.parent = {
+      id: node.parent.id,
+      type: node.parent.type,
+      name: node.parent.name
+    };
+  }
+  
+  return details;
 }
 
 // Handle messages from the MCP server
@@ -726,7 +830,7 @@ async function applyExtendedContainerStyles(
  * Applies shape styles with enhanced options
  */
 async function applyExtendedShapeStyles(
-  node: RectangleNode | EllipseNode | PolygonNode | StarNode | VectorNode,
+  node: RectangleNode | EllipseNode | PolygonNode | StarNode | VectorNode | LineNode,
   styles: ExtendedStyleOptions
 ): Promise<void> {
   await applyExtendedStyles(node, styles);
@@ -978,915 +1082,781 @@ function applyBaseStyle(frame: FrameNode, style: string = 'minimal', designSyste
   }
 }
 
-/**
- * Adds a new element to the design
- */
-async function handleAddElement(message: PluginMessage): Promise<void> {
-  console.log('Message received for ADD_ELEMENT:', message);
-  
-  const { elementType, parent, properties } = message.payload;
-  console.log('Add element payload:', message.payload);
-  
-  // Validation: ensure elementType is set
-  if (!elementType) {
-    throw new Error('Missing elementType in payload');
-  }
-  
-  console.log('Extracted values for ADD_ELEMENT:', { elementType, parent, properties });
-  
-  // Resolve parent node - in this priority:
-  // 1. Specified parent ID 
-  // 2. Current selection (if it's a frame or component)
-  // 3. Active page from session state
-  // 4. Current page
-  
-  let parentNode: BaseNode | null = null;
-  
-  // If parent ID is provided, try to get it
-  if (parent) {
-    parentNode = figma.getNodeById(parent);
-    console.log(`Parent node resolved to ${parent} (${parentNode?.type}) via provided`);
-  }
-  
-  // If no parent or parent not found, try to use current selection
-  if (!parentNode && figma.currentPage.selection.length > 0) {
-    const selectedNode = figma.currentPage.selection[0];
-    
-    // Only use if it's a frame, component, or instance
-    if (selectedNode.type === 'FRAME' || selectedNode.type === 'COMPONENT' || selectedNode.type === 'INSTANCE' || selectedNode.type === 'GROUP') {
-      parentNode = selectedNode;
-      console.log(`Parent node resolved to ${selectedNode.id} (${selectedNode.type}) via selection`);
-    }
-  }
-  
-  // If still no parent, try to use active page from session state
-  if (!parentNode) {
-    const activePageId = sessionState.getActivePageId();
-    if (activePageId) {
-      parentNode = figma.getNodeById(activePageId);
-      if (parentNode && parentNode.type === 'PAGE') {
-        console.log(`Parent node resolved to ${activePageId} (PAGE) via session state`);
-      } else {
-        parentNode = null;
-      }
-    }
-  }
-  
-  // Final fallback to current page
-  if (!parentNode) {
-    parentNode = figma.currentPage;
-    console.log('Parent node resolved to current page as fallback');
-  }
-  
-  // Check if the parent node is valid - it must be one of these types
-  const validParentTypes = ['PAGE', 'FRAME', 'COMPONENT', 'INSTANCE', 'GROUP'];
-  if (!validParentTypes.includes(parentNode.type)) {
-    throw new Error(`Invalid parent node type: ${parentNode.type}. Must be one of: ${validParentTypes.join(', ')}`);
-  }
-  
-  // Cast to more specific types
-  let parentPage: PageNode;
-  let parentFrame: FrameNode | ComponentNode | InstanceNode | null = null;
-  
-  if (parentNode.type === 'PAGE') {
-    parentPage = parentNode as PageNode;
-  } else {
-    // Navigate up the tree to find the parent page
-    let currentNode: BaseNode = parentNode;
-    while (currentNode && currentNode.type !== 'PAGE') {
-      currentNode = currentNode.parent!;
-    }
-    parentPage = currentNode as PageNode;
-    
-    // The direct parent is a frame, component, or instance
-    if (parentNode.type === 'FRAME' || parentNode.type === 'COMPONENT' || parentNode.type === 'INSTANCE') {
-      parentFrame = parentNode as FrameNode | ComponentNode | InstanceNode;
-    }
-  }
-  
-  // Make sure the page containing the parent is the current page
-  if (parentPage.id !== figma.currentPage.id) {
-    figma.currentPage = parentPage;
-    console.log(`Switched to page ${parentPage.id} to create element`);
-  }
-  
-  let createdNode: SceneNode | null = null;
-  
+// Return type for handle functions
+type HandleResponse = {
+  success: boolean;
+  error?: string;
+  data?: any;
+};
+
+// Helper function to create error responses
+function createErrorResponse(message: string): HandleResponse {
+  console.error(message);
+  return {
+    success: false,
+    error: message
+  };
+}
+
+// Helper function to create success responses
+function createSuccessResponse(data: any = {}): HandleResponse {
+  return {
+    success: true,
+    data
+  };
+}
+
+// Helper function to handle adding elements
+async function handleAddElement(msg: { type: string, payload: any }): Promise<HandleResponse> {
   try {
+    // Check if payload is valid
+    if (!msg.payload || !msg.payload.elementType) {
+      return createErrorResponse('Invalid payload for ADD_ELEMENT command');
+    }
+    
+    // Get the parent node ID
+    const parentId = msg.payload.parent;
+    const properties = msg.payload.properties || {};
+    const position = properties.position || {};
+    const nodeType = msg.payload.elementType;
+    
+    // Look up the parent in the current document
+    let parent: BaseNode | null = null;
+    if (parentId) {
+      parent = figma.getNodeById(parentId);
+      if (!parent) {
+        console.warn(`Parent node with ID ${parentId} not found`);
+      }
+    }
+    
+    // If parent not found or not specified, use current page
+    const parentPage = parent && 'type' in parent && parent.type === 'PAGE' 
+      ? parent as PageNode 
+      : figma.currentPage;
+    
+    // Get parent frame if parent is a frame
+    let parentFrame: FrameNode | GroupNode | ComponentSetNode | ComponentNode | InstanceNode | null = null;
+    if (parent && 'type' in parent) {
+      if (parent.type === 'FRAME' || parent.type === 'GROUP' || 
+          parent.type === 'COMPONENT' || parent.type === 'COMPONENT_SET' ||
+          parent.type === 'INSTANCE') {
+        parentFrame = parent as FrameNode | ComponentNode | ComponentSetNode | InstanceNode | GroupNode;
+      }
+    }
+    
+    // Parse enhanced styles
+    const enhancedStyles = properties.styles || {};
+    
+    // Determine the position based on parent frame or positioning data
+    let x = position.x !== undefined ? position.x : 0;
+    let y = position.y !== undefined ? position.y : 0;
+    
+    // When using layout position properties
+    if (properties.layoutPosition) {
+      // Get parent dimensions
+      const parentWidth = parentFrame && 'width' in parentFrame ? parentFrame.width : figma.viewport.bounds.width;
+      const parentHeight = parentFrame && 'height' in parentFrame ? parentFrame.height : figma.viewport.bounds.height;
+      
+      // Set position based on layout position
+      switch (properties.layoutPosition) {
+        case 'top':
+          x = (parentWidth - (position.width || 100)) / 2;
+          y = 0;
+          break;
+        case 'bottom':
+          x = (parentWidth - (position.width || 100)) / 2;
+          y = parentHeight - (position.height || 50);
+          break;
+        case 'left':
+          x = 0;
+          y = (parentHeight - (position.height || 100)) / 2;
+          break;
+        case 'right':
+          x = parentWidth - (position.width || 50);
+          y = (parentHeight - (position.height || 100)) / 2;
+          break;
+        case 'center':
+          x = (parentWidth - (position.width || 100)) / 2;
+          y = (parentHeight - (position.height || 100)) / 2;
+          break;
+      }
+    }
+    
+    // Enrich styles with positioning
+    const enrichedStyles = {
+      ...enhancedStyles,
+      x,
+      y,
+      width: position.width,
+      height: position.height
+    };
+    
     // Create the element based on type
-  switch (elementType) {
+    let createdNode: SceneNode | null = null;
+    
+    switch (nodeType) {
       case 'TEXT': {
-        // Create text element
-        if (parentFrame) {
-          createdNode = await createTextElement(parentFrame, properties);
-        } else {
-          const frame = figma.createFrame();
-          frame.name = properties.name || 'Text Container';
-          parentPage.appendChild(frame);
-          createdNode = await createTextElement(frame, properties);
-        }
-      break;
-      }
+        // Create a text node
+        const text = figma.createText();
         
+        // Set text content
+        // Try to use displayText first, then fallback to other properties
+        const content = properties.displayText || properties.text || properties.content || 'Text';
+        
+        // Load font first
+        try {
+          await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+          text.fontName = { family: "Inter", style: "Regular" };
+          text.characters = content;
+          
+          // Add to parent
+          if (parentFrame) {
+            parentFrame.appendChild(text);
+          } else {
+            parentPage.appendChild(text);
+          }
+          
+          // Position text
+          text.x = x;
+          text.y = y;
+          
+          // Apply text specific styles
+          await applyExtendedTextStyles(text, enrichedStyles);
+          
+          createdNode = text;
+        } catch (e) {
+          console.warn('Error loading font:', e);
+          return createErrorResponse(`Failed to load font: ${e}`);
+        }
+        break;
+      }
+      
       case 'BUTTON': {
-        if (parentFrame) {
-          createdNode = await createButtonElement(parentFrame, properties);
-        } else {
-          createdNode = await createButtonOnPage(parentPage, properties);
-        }
-      break;
-      }
+        // Create a rectangle for the button
+        const button = figma.createRectangle();
+        button.name = properties.name || 'Button';
         
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(button);
+        } else {
+          parentPage.appendChild(button);
+        }
+        
+        // Set button size
+        const width = enrichedStyles.width || 120;
+        const height = enrichedStyles.height || 40;
+        button.resize(width, height);
+        
+        // Position button
+        button.x = x;
+        button.y = y;
+        
+        // Basic styling
+        button.fills = [{ type: 'SOLID', color: { r: 0.12, g: 0.47, b: 0.71 } }];
+        button.cornerRadius = 4;
+        
+        // Create button text
+        const text = figma.createText();
+        
+        // Load font before setting characters
+        try {
+          await figma.loadFontAsync({ family: "Inter", style: "Medium" });
+          text.fontName = { family: "Inter", style: "Medium" };
+          text.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
+          
+          // Use displayText first, then fallback to other properties
+          text.characters = properties.displayText || properties.text || properties.content || 'Button';
+          
+          // Add to page
+          parentFrame ? parentFrame.appendChild(text) : parentPage.appendChild(text);
+          
+          // Center text in the button
+          text.x = button.x + (button.width - text.width) / 2;
+          text.y = button.y + (button.height - text.height) / 2;
+        } catch (e) {
+          console.warn('Error loading button text font:', e);
+        }
+        
+        // Apply extended styles to button
+        await applyExtendedShapeStyles(button, enrichedStyles);
+        
+        // Group button and text
+        const nodes = [button, text];
+        if (parentFrame) {
+          const group = figma.group(nodes, parentFrame);
+          group.name = properties.name || 'Button Group';
+          createdNode = group;
+        } else {
+          const group = figma.group(nodes, parentPage);
+          group.name = properties.name || 'Button Group';
+          createdNode = group;
+        }
+        break;
+      }
+      
       case 'INPUT': {
-        if (parentFrame) {
-          createdNode = await createInputElement(parentFrame, properties);
-        } else {
-          createdNode = await createInputOnPage(parentPage, properties);
-        }
-      break;
-      }
+        // Create a rectangle for the input
+        const input = figma.createRectangle();
+        input.name = properties.name || 'Input Field';
         
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(input);
+        } else {
+          parentPage.appendChild(input);
+        }
+  
+        // Set input size
+        const width = enrichedStyles.width || 240;
+        const height = enrichedStyles.height || 40;
+        input.resize(width, height);
+  
+        // Basic styling
+        input.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
+        input.strokes = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 } }];
+        input.strokeWeight = 1;
+        input.cornerRadius = 4;
+  
+        // Create placeholder text
+        const text = figma.createText();
+        
+        // Load font before setting characters
+        try {
+          await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+          text.fontName = { family: "Inter", style: "Regular" };
+          text.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.6, b: 0.6 } }];
+          
+          // Use displayText first, then fallback to other properties
+          text.characters = properties.displayText || properties.placeholder || properties.text || properties.content || 'Enter text...';
+          
+          // Add text to page first to get its dimensions
+          parentFrame ? parentFrame.appendChild(text) : parentPage.appendChild(text);
+          
+          // Position text inside input
+          text.x = input.x + 12;
+          text.y = input.y + (height - text.height) / 2;
+        } catch (e) {
+          console.warn('Error loading input field font:', e);
+        }
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(input, enrichedStyles);
+        
+        // Group input and text
+        const nodes = [input, text];
+        if (parentFrame) {
+          const group = figma.group(nodes, parentFrame);
+          group.name = properties.name || 'Input Group';
+          createdNode = group;
+        } else {
+          const group = figma.group(nodes, parentPage);
+          group.name = properties.name || 'Input Group';
+          createdNode = group;
+        }
+        break;
+      }
+      
       case 'FRAME': {
-        if (parentFrame) {
-          createdNode = createFrameElement(parentFrame, properties);
-        } else {
-          // Create directly on page
-          const frame = figma.createFrame();
-          
-          // Apply name if provided
-          frame.name = properties.name || 'Frame';
-          
-          // Set position and size if provided
-          if (properties.position) {
-            if (properties.position.x !== undefined) frame.x = properties.position.x;
-            if (properties.position.y !== undefined) frame.y = properties.position.y;
-            if (properties.position.width !== undefined) frame.resize(properties.position.width, frame.height);
-            if (properties.position.height !== undefined) frame.resize(frame.width, properties.position.height);
-          } else {
-            // Default position
-            frame.x = 0;
-            frame.y = 0;
-            frame.resize(400, 300);
-          }
-          
-          // Add some content based on description
-          if (properties.text || properties.content) {
-            const text = figma.createText();
-            text.characters = properties.text || properties.content;
-            frame.appendChild(text);
-            text.x = 16;
-            text.y = 16;
-          }
-          
-          // Apply any specific styles
-          if (properties.styles) {
-            applyContainerStyles(frame, properties.styles);
-          }
-          
-          parentPage.appendChild(frame);
-          createdNode = frame;
-        }
-      break;
-      }
+        // Create the frame
+  const frame = figma.createFrame();
+        frame.name = properties.name || 'Frame';
         
-      case 'CARD': {
-        if (parentFrame) {
-          createdNode = await createCardElement(parentFrame, properties);
-        } else {
-          // Create on page
-          const card = figma.createFrame();
-          card.name = properties.name || 'Card';
-          
-          // Set position and size if provided
-          if (properties.position) {
-            if (properties.position.x !== undefined) card.x = properties.position.x;
-            if (properties.position.y !== undefined) card.y = properties.position.y;
-            if (properties.position.width !== undefined) card.resize(properties.position.width, card.height);
-            if (properties.position.height !== undefined) card.resize(card.width, properties.position.height);
-          } else {
-            card.resize(300, 200);
-          }
-          
-          // Add text content
-          const cardTitle = figma.createText();
-          cardTitle.characters = "Card Title";
-          cardTitle.x = 16;
-          cardTitle.y = 16;
-          card.appendChild(cardTitle);
-          
-          // Add description if provided
-          if (properties.text || properties.content) {
-            const cardDesc = figma.createText();
-            cardDesc.characters = properties.text || properties.content;
-            cardDesc.x = 16;
-            cardDesc.y = 48;
-            card.appendChild(cardDesc);
-          }
-          
-          // Apply styles
-          card.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
-          card.cornerRadius = 8;
-          card.strokeWeight = 1;
-          card.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
-          
-          // Apply any specific styles
-          if (properties.styles) {
-            applyContainerStyles(card, properties.styles);
-          }
-          
-          parentPage.appendChild(card);
-          createdNode = card;
-        }
-      break;
-      }
-        
-      case 'NAVBAR': {
-        if (parentFrame) {
-          createdNode = await createNavbarElement(parentFrame, properties);
-        } else {
-          // Create a navbar at the top of the page
-          const navbar = figma.createFrame();
-          navbar.name = properties.name || 'Navigation Bar';
-          
-          // Set position and size
-          if (properties.position) {
-            if (properties.position.x !== undefined) navbar.x = properties.position.x;
-            if (properties.position.y !== undefined) navbar.y = properties.position.y;
-            if (properties.position.width !== undefined) navbar.resize(properties.position.width, navbar.height);
-            if (properties.position.height !== undefined) navbar.resize(navbar.width, properties.position.height);
-          } else {
-            navbar.resize(800, 64);
-            navbar.x = 0;
-            navbar.y = 0;
-          }
-          
-          // Set layout
-          navbar.layoutMode = 'HORIZONTAL';
-          navbar.primaryAxisAlignItems = 'SPACE_BETWEEN';
-          navbar.counterAxisAlignItems = 'CENTER';
-          navbar.paddingLeft = 16;
-          navbar.paddingRight = 16;
-          
-          // Add logo
-          const logo = figma.createText();
-          logo.characters = 'Logo';
-          logo.fontSize = 20;
-          logo.setRangeFontName(0, logo.characters.length, { family: "Inter", style: "Bold" });
-          
-          // Add navigation links
-          const navLinks = figma.createFrame();
-          navLinks.name = 'Nav Links';
-          navLinks.layoutMode = 'HORIZONTAL';
-          navLinks.itemSpacing = 24;
-          navLinks.fills = [];
-          
-          // Add some default links
-          const link1 = figma.createText();
-          link1.characters = 'Home';
-          navLinks.appendChild(link1);
-          
-          const link2 = figma.createText();
-          link2.characters = 'About';
-          navLinks.appendChild(link2);
-          
-          const link3 = figma.createText();
-          link3.characters = 'Contact';
-          navLinks.appendChild(link3);
-          
-          // Add components to navbar
-          navbar.appendChild(logo);
-          navbar.appendChild(navLinks);
-          
-          // Apply styling
-          navbar.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
-          navbar.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
-          navbar.strokeWeight = 1;
-          navbar.strokeAlign = 'INSIDE';
-          
-          // Apply any specific styles
-          if (properties.styles) {
-            applyContainerStyles(navbar, properties.styles);
-          }
-          
-          parentPage.appendChild(navbar);
-          createdNode = navbar;
-        }
-      break;
-      }
-      
-      case 'RECTANGLE': {
-        let rect: RectangleNode;
-        
-        if (parentFrame) {
-          rect = createRectangleElement(parentFrame, properties);
-        } else {
-          // Create directly on page
-          rect = figma.createRectangle();
-          rect.name = properties.name || 'Rectangle';
-          
-          // Set position and size
-          if (properties.position) {
-            if (properties.position.x !== undefined) rect.x = properties.position.x;
-            if (properties.position.y !== undefined) rect.y = properties.position.y;
-            if (properties.position.width !== undefined) rect.resize(properties.position.width, rect.height);
-            if (properties.position.height !== undefined) rect.resize(rect.width, properties.position.height);
-          } else {
-            rect.resize(100, 100);
-          }
-          
-          // Apply basic styling
-          rect.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
-          
-          // Apply specific styles if provided
-          if (properties.styles) {
-            applyShapeStyles(rect, properties.styles);
-          }
-          
-          parentPage.appendChild(rect);
-        }
-        
-        createdNode = rect;
-      break;
-      }
-      
-      case 'CUSTOM': {
-        // For custom elements, create a frame and add text content
-        const frame = figma.createFrame();
-        frame.name = properties.name || 'Custom Element';
-        
-        // Set position and size
-        if (properties.position) {
-          if (properties.position.x !== undefined) frame.x = properties.position.x;
-          if (properties.position.y !== undefined) frame.y = properties.position.y;
-          if (properties.position.width !== undefined) frame.resize(properties.position.width, frame.height);
-          if (properties.position.height !== undefined) frame.resize(frame.width, properties.position.height);
-        } else {
-          frame.resize(400, 300);
-        }
-        
-        // Add text content with the description
-        if (properties.text || properties.content) {
-          const text = figma.createText();
-          text.characters = properties.text || properties.content;
-          frame.appendChild(text);
-          text.x = 16;
-          text.y = 16;
-          
-          // Try to fit the text
-          text.resize(frame.width - 32, text.height);
-        }
-        
-        // Apply styles
-        if (properties.style === 'minimal') {
-          frame.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
-          frame.strokeWeight = 1;
-          frame.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
-        } else {
-          frame.fills = [{ type: 'SOLID', color: { r: 0.98, g: 0.98, b: 0.98 }, opacity: 1 }];
-          frame.cornerRadius = 8;
-          frame.strokeWeight = 1;
-          frame.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
-          
-          // Add a subtle shadow
-          frame.effects = [
-            {
-              type: 'DROP_SHADOW',
-              color: { r: 0, g: 0, b: 0, a: 0.1 },
-              offset: { x: 0, y: 2 },
-              radius: 4,
-              visible: true,
-              blendMode: 'NORMAL'
-            }
-          ];
-        }
-        
-        // Apply any specific styles
-        if (properties.styles) {
-          applyContainerStyles(frame, properties.styles);
-        }
-        
-        // Attach to parent
+        // Add to parent
         if (parentFrame) {
           parentFrame.appendChild(frame);
         } else {
           parentPage.appendChild(frame);
         }
         
-        createdNode = frame;
-      break;
-      }
-      
-      case 'FORM': {
-        // Create a form container frame
-        const form = figma.createFrame();
-        form.name = properties.name || 'Form';
+        // Set default size
+        const width = enrichedStyles.width || 400;
+        const height = enrichedStyles.height || 300;
+  frame.resize(width, height);
+  
+        // Basic styling
+        frame.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
         
-        // Set position and size
-        if (properties.position) {
-          if (properties.position.x !== undefined) form.x = properties.position.x;
-          if (properties.position.y !== undefined) form.y = properties.position.y;
-          if (properties.position.width !== undefined) form.resize(properties.position.width, form.height);
-          if (properties.position.height !== undefined) form.resize(form.width, properties.position.height);
-        } else {
-          form.resize(400, 400);
-        }
-        
-        // Set layout
-        form.layoutMode = 'VERTICAL';
-        form.itemSpacing = 16;
-        form.paddingLeft = 24;
-        form.paddingRight = 24;
-        form.paddingTop = 24;
-        form.paddingBottom = 24;
-        
-        // Add title
-        const title = figma.createText();
-        title.characters = 'Form Title';
-        title.fontSize = 20;
-        title.setRangeFontName(0, title.characters.length, { family: "Inter", style: "SemiBold" });
-        form.appendChild(title);
-        
-        // Add form description
+        // Add content if provided
         if (properties.text || properties.content) {
-          const desc = figma.createText();
-          desc.characters = properties.text || properties.content || 'Form description';
-          form.appendChild(desc);
-        }
-        
-        // Add form fields - name, email, message
-        for (const fieldName of ['Name', 'Email', 'Message']) {
-          // Create field container
-          const fieldContainer = figma.createFrame();
-          fieldContainer.name = `${fieldName} Field`;
-          fieldContainer.layoutMode = 'VERTICAL';
-          fieldContainer.itemSpacing = 8;
-          fieldContainer.fills = [];
-          
-          // Add label
-          const label = figma.createText();
-          label.characters = fieldName;
-          label.fontSize = 14;
-          label.setRangeFontName(0, label.characters.length, { family: "Inter", style: "Medium" });
-          fieldContainer.appendChild(label);
-          
-          // Add input
-          const input = figma.createFrame();
-          input.name = `${fieldName} Input`;
-          input.resize(form.width - 48, 40);
-          input.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
-          input.strokes = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 }, opacity: 1 }];
-          input.strokeWeight = 1;
-          input.cornerRadius = 4;
-          
-          // For message field, make it taller
-          if (fieldName === 'Message') {
-            input.resize(input.width, 120);
+          try {
+            // Create a text node for the content
+            const text = figma.createText();
+            await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+            text.fontName = { family: "Inter", style: "Regular" };
+            text.characters = properties.text || properties.content;
+            frame.appendChild(text);
+            text.x = 16;
+            text.y = 16;
+            text.resize(width - 32, text.height);
+          } catch (e) {
+            console.warn('Error adding text content to frame:', e);
           }
-          
-          fieldContainer.appendChild(input);
-          form.appendChild(fieldContainer);
         }
         
-        // Add submit button
-        const button = figma.createFrame();
-        button.name = 'Submit Button';
-        button.resize(120, 40);
-        button.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.9 }, opacity: 1 }];
-        button.cornerRadius = 4;
+        // Apply extended styles
+        await applyExtendedContainerStyles(frame, enrichedStyles);
         
-        // Add button text
-        const buttonText = figma.createText();
-        buttonText.characters = 'Submit';
-        buttonText.fontSize = 16;
-        buttonText.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
-        button.appendChild(buttonText);
-        
-        // Center text in button
-        buttonText.x = (button.width - buttonText.width) / 2;
-        buttonText.y = (button.height - buttonText.height) / 2;
-        
-        form.appendChild(button);
-        
-        // Apply form styling
-        form.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 1 }];
-        form.cornerRadius = 8;
-        form.strokeWeight = 1;
-        form.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 }, opacity: 1 }];
-        
-        // Apply any specific styles
-        if (properties.styles) {
-          applyContainerStyles(form, properties.styles);
-        }
-        
-        // Attach to parent
-        if (parentFrame) {
-          parentFrame.appendChild(form);
-        } else {
-          parentPage.appendChild(form);
-        }
-        
-        createdNode = form;
+        createdNode = frame;
         break;
       }
       
-    default:
-      throw new Error(`Unsupported element type: ${elementType}`);
-  }
-  
-    // Check if we successfully created a node
-    if (!createdNode) {
-      throw new Error(`Failed to create element of type: ${elementType}`);
-    }
-    
-    // Apply layout positioning if specified
-    if (parentFrame && properties.layoutPosition && parentFrame.layoutMode !== 'NONE') {
-      switch (properties.layoutPosition) {
-        case 'top':
-          // Try to place at the top of the parent frame
-          createdNode.layoutPositioning = 'ABSOLUTE';
-          createdNode.y = parentFrame.paddingTop || 0;
-          break;
-        case 'bottom':
-          // Try to place at the bottom of the parent frame
-          createdNode.layoutPositioning = 'ABSOLUTE';
-          createdNode.y = parentFrame.height - createdNode.height - (parentFrame.paddingBottom || 0);
-          break;
-        case 'left':
-          // Try to place at the left of the parent frame
-          createdNode.layoutPositioning = 'ABSOLUTE';
-          createdNode.x = parentFrame.paddingLeft || 0;
-          break;
-        case 'right':
-          // Try to place at the right of the parent frame
-          createdNode.layoutPositioning = 'ABSOLUTE';
-          createdNode.x = parentFrame.width - createdNode.width - (parentFrame.paddingRight || 0);
-          break;
-        case 'center':
-          // Try to center in the parent frame
-          createdNode.layoutPositioning = 'ABSOLUTE';
-          createdNode.x = (parentFrame.width - createdNode.width) / 2;
-          createdNode.y = (parentFrame.height - createdNode.height) / 2;
-          break;
+      case 'CARD': {
+        // Create a rectangle for the card instead of a frame
+        const card = figma.createRectangle();
+        card.name = properties.name || 'Card';
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(card);
+        } else {
+          parentPage.appendChild(card);
+        }
+        
+        // Set card size
+        const width = enrichedStyles.width || 300;
+        const height = enrichedStyles.height || 200;
+        card.resize(width, height);
+        
+        // Basic styling
+        card.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
+        card.cornerRadius = 8;
+        card.strokes = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 } }];
+        card.strokeWeight = 1;
+        
+        // Add shadow effect
+        card.effects = [
+          {
+            type: 'DROP_SHADOW',
+            color: { r: 0, g: 0, b: 0, a: 0.1 },
+            offset: { x: 0, y: 2 },
+            radius: 4,
+            visible: true,
+            blendMode: 'NORMAL'
+          }
+        ];
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(card, enrichedStyles);
+        
+        // Create an array to hold all elements that will be part of the card group
+        const elements: SceneNode[] = [card];
+        
+        // Try to add title and description text
+        try {
+          // Create and place title
+          if (properties.title || properties.name) {
+            const title = figma.createText();
+            await figma.loadFontAsync({ family: "Inter", style: "Medium" });
+            title.fontName = { family: "Inter", style: "Medium" };
+            title.fontSize = 16;
+            title.characters = properties.title || properties.name || 'Card Title';
+            
+            // Add to page to get dimensions
+            parentFrame ? parentFrame.appendChild(title) : parentPage.appendChild(title);
+            
+            // Position at the top of the card with padding
+            title.x = card.x + 16;
+            title.y = card.y + 16;
+            
+            elements.push(title);
+            
+            // Add description if provided
+            if (properties.text || properties.content) {
+              const desc = figma.createText();
+              await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+              desc.fontName = { family: "Inter", style: "Regular" };
+              desc.fontSize = 14;
+              desc.characters = properties.text || properties.content;
+              
+              // Add to page to get dimensions
+              parentFrame ? parentFrame.appendChild(desc) : parentPage.appendChild(desc);
+              
+              // Position below the title
+              desc.x = card.x + 16;
+              desc.y = title.y + title.height + 8;
+              desc.resize(width - 32, desc.height);
+              
+              elements.push(desc);
+            }
+          }
+        } catch (e) {
+          console.warn('Error adding text to card:', e);
+        }
+        
+        // Group all elements
+        if (parentFrame) {
+          const group = figma.group(elements, parentFrame);
+          group.name = properties.name || 'Card Group';
+          createdNode = group;
+        } else {
+          const group = figma.group(elements, parentPage);
+          group.name = properties.name || 'Card Group';
+          createdNode = group;
+        }
+        break;
       }
-    }
-    
-    // Send success response with the created node details
-  sendResponse({
-    type: message.type,
-    success: true,
-      data: {
-        id: createdNode.id,
-        type: createdNode.type,
-        name: createdNode.name,
-        parentId: parentNode.id,
-        parentType: parentNode.type,
-        activePageId: figma.currentPage.id
-      },
-      id: message.id
-    });
-  } catch (error) {
-    console.error('Error in handleAddElement:', error);
-    sendResponse({
-      type: message.type,
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    id: message.id
-  });
-  }
-}
-
-/**
- * Helper function to create a button directly on a page
- */
-async function createButtonOnPage(page: PageNode, properties: any): Promise<FrameNode> {
-  const button = figma.createFrame();
-  button.name = properties.name || 'Button';
-  page.appendChild(button);
-  
-  // Set button size
-  const width = properties.width || 120;
-  const height = properties.height || 40;
-  button.resize(width, height);
-  
-  // Set button corner radius
-  button.cornerRadius = properties.cornerRadius || 4;
-  
-  // Create button text
-  const text = figma.createText();
-  button.appendChild(text);
-  
-  // Load font before setting characters
-  await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-  
-  text.characters = properties.text || 'Button';
-  text.textAlignHorizontal = 'CENTER';
-  text.textAlignVertical = 'CENTER';
-  
-  // Center the text in the button
-  text.resize(width, height);
-  
-  return button;
-}
-
-/**
- * Helper function to create an input field directly on a page
- */
-async function createInputOnPage(page: PageNode, properties: any): Promise<FrameNode> {
-  const input = figma.createFrame();
-  input.name = properties.name || 'Input Field';
-  page.appendChild(input);
-  
-  // Set input size
-  const width = properties.width || 240;
-  const height = properties.height || 40;
-  input.resize(width, height);
-  
-  // Set input corner radius
-  input.cornerRadius = properties.cornerRadius || 4;
-  
-  // Create placeholder text
-  const text = figma.createText();
-  input.appendChild(text);
-  
-  // Load font before setting characters
-  await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-  
-  text.characters = properties.placeholder || 'Enter text...';
-  text.textAlignVertical = 'CENTER';
-  
-  // Position the text inside the input with padding
-  text.x = 8;
-  text.resize(width - 16, height);
-  
-  return input;
-}
-
-/**
- * Creates a text element with the specified properties
- */
-async function createTextElement(parent: FrameNode | GroupNode | ComponentNode | InstanceNode, properties: any): Promise<TextNode> {
-  const text = figma.createText();
-  parent.appendChild(text);
-  
-  // Apply basic text properties
-  if (properties.name) text.name = properties.name;
-  if (properties.x !== undefined) text.x = properties.x;
-  if (properties.y !== undefined) text.y = properties.y;
-  if (properties.width !== undefined) text.resize(properties.width, text.height);
-  
-  // Load font before setting characters
-  await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-  
-  // Apply text-specific properties
-  if (properties.content) {
-    text.characters = properties.content;
-  }
-  
-  return text;
-}
-
-/**
- * Creates a rectangle element with the specified properties
- */
-function createRectangleElement(parent: FrameNode | GroupNode | ComponentNode | InstanceNode, properties: any): RectangleNode {
-  const rect = figma.createRectangle();
-  parent.appendChild(rect);
-  
-  // Apply basic properties
-  if (properties.name) rect.name = properties.name;
-  if (properties.x !== undefined) rect.x = properties.x;
-  if (properties.y !== undefined) rect.y = properties.y;
-  if (properties.width !== undefined && properties.height !== undefined) {
-    rect.resize(properties.width, properties.height);
-  }
-  
-  return rect;
-}
-
-/**
- * Creates a button element with the specified properties
- */
-async function createButtonElement(parent: FrameNode | GroupNode | ComponentNode | InstanceNode, properties: any): Promise<FrameNode> {
-  // Create a frame for the button
-  const button = figma.createFrame();
-  button.name = properties.name || 'Button';
-  parent.appendChild(button);
-  
-  // Apply basic properties
-  if (properties.x !== undefined) button.x = properties.x;
-  if (properties.y !== undefined) button.y = properties.y;
-  
-  // Set button size
-  const width = properties.width || 120;
-  const height = properties.height || 40;
-  button.resize(width, height);
-  
-  // Set button corner radius
-  if (properties.cornerRadius !== undefined) {
-    button.cornerRadius = properties.cornerRadius;
-  } else {
-    button.cornerRadius = 4; // Default radius
-  }
-  
-  // Create button text
-  const text = figma.createText();
-  button.appendChild(text);
-  
-  // Load font before setting characters
-  await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-  
-  text.characters = properties.text || 'Button';
-  text.textAlignHorizontal = 'CENTER';
-  text.textAlignVertical = 'CENTER';
-  
-  // Center the text in the button
-  text.resize(width, height);
-  
-  return button;
-}
-
-/**
- * Creates an input element with the specified properties
- */
-async function createInputElement(parent: FrameNode | GroupNode | ComponentNode | InstanceNode, properties: any): Promise<FrameNode> {
-  // Create a frame for the input
-  const input = figma.createFrame();
-  input.name = properties.name || 'Input Field';
-  parent.appendChild(input);
-  
-  // Apply basic properties
-  if (properties.x !== undefined) input.x = properties.x;
-  if (properties.y !== undefined) input.y = properties.y;
-  
-  // Set input size
-  const width = properties.width || 240;
-  const height = properties.height || 40;
-  input.resize(width, height);
-  
-  // Set input corner radius
-  if (properties.cornerRadius !== undefined) {
-    input.cornerRadius = properties.cornerRadius;
-  } else {
-    input.cornerRadius = 4; // Default radius
-  }
-  
-  // Create placeholder text
-  const text = figma.createText();
-  input.appendChild(text);
-  
-  // Load font before setting characters
-  await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-  
-  text.characters = properties.placeholder || 'Enter text...';
-  text.textAlignVertical = 'CENTER';
-  
-  // Position the text inside the input with padding
-  text.x = 8;
-  text.resize(width - 16, height);
-  
-  return input;
-}
-
-/**
- * Creates a frame element with the specified properties
- */
-function createFrameElement(parent: FrameNode | GroupNode | ComponentNode | InstanceNode, properties: any): FrameNode {
-  const frame = figma.createFrame();
-  parent.appendChild(frame);
-  
-  // Apply basic properties
-  if (properties.name) frame.name = properties.name;
-  if (properties.x !== undefined) frame.x = properties.x;
-  if (properties.y !== undefined) frame.y = properties.y;
-  
-  // Set frame size
-  const width = properties.width || 200;
-  const height = properties.height || 200;
-  frame.resize(width, height);
-  
-  // Apply corner radius if specified
-  if (properties.cornerRadius !== undefined) {
-    frame.cornerRadius = properties.cornerRadius;
-  }
-  
-  return frame;
-}
-
-/**
- * Creates a simple navbar element
- */
-async function createNavbarElement(parent: FrameNode | GroupNode | ComponentNode | InstanceNode, properties: any): Promise<FrameNode> {
-  const navbar = figma.createFrame();
+      
+      case 'NAVBAR': {
+        // Create a rectangle for the navbar instead of a frame
+        const navbar = figma.createRectangle();
   navbar.name = properties.name || 'Navigation Bar';
-  parent.appendChild(navbar);
-  
-  // Apply basic properties
-  if (properties.x !== undefined) navbar.x = properties.x;
-  if (properties.y !== undefined) navbar.y = properties.y;
-  
-  // Set navbar size - typically full width and fixed height
-  const width = properties.width || parent.width;
-  const height = properties.height || 60;
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(navbar);
+        } else {
+          parentPage.appendChild(navbar);
+        }
+        
+        // Get parent width if available, or use default
+        const parentWidth = parentFrame && 'width' in parentFrame ? parentFrame.width : 1440;
+        
+        // Set navbar size (typically full width)
+        const width = enrichedStyles.width || parentWidth;
+        const height = enrichedStyles.height || 64;
   navbar.resize(width, height);
   
-  // Setup auto layout
-  navbar.layoutMode = 'HORIZONTAL';
-  navbar.primaryAxisAlignItems = 'SPACE_BETWEEN';
-  navbar.counterAxisAlignItems = 'CENTER';
-  navbar.paddingLeft = 20;
-  navbar.paddingRight = 20;
-  
-  // Load font before creating text elements
-  await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-  
-  // Create logo/brand text
-  const brandText = figma.createText();
-  navbar.appendChild(brandText);
-  brandText.characters = (properties.logo && properties.logo.text) || 'Brand';
-  
-  // Create links container
-  const linksContainer = figma.createFrame();
-  navbar.appendChild(linksContainer);
-  linksContainer.name = 'Links';
-  linksContainer.layoutMode = 'HORIZONTAL';
-  linksContainer.itemSpacing = 24;
-  linksContainer.fills = [];
-  
-  // Add navigation links
-  const links = properties.links || [
-    { text: 'Home' },
-    { text: 'About' },
-    { text: 'Services' },
-    { text: 'Contact' }
-  ];
-  
-  for (const link of links) {
-    const linkText = figma.createText();
-    linksContainer.appendChild(linkText);
-    linkText.characters = link.text;
-  }
-  
-  return navbar;
-}
-
-/**
- * Creates a card element with the specified properties
- */
-async function createCardElement(parent: FrameNode | GroupNode | ComponentNode | InstanceNode, properties: any): Promise<FrameNode> {
-  const card = figma.createFrame();
-  card.name = properties.name || 'Card';
-  parent.appendChild(card);
-  
-  // Apply basic properties
-  if (properties.x !== undefined) card.x = properties.x;
-  if (properties.y !== undefined) card.y = properties.y;
-  
-  // Set card size
-  const width = properties.width || 300;
-  const height = properties.height || 350;
-  card.resize(width, height);
-  
-  // Set card corner radius
-  if (properties.cornerRadius !== undefined) {
-    card.cornerRadius = properties.cornerRadius;
+        // Basic styling
+        navbar.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
+        
+        // Create a collection of nav elements
+        const navElements: SceneNode[] = [navbar];
+        
+        try {
+          // Create brand/logo text
+          const logo = figma.createText();
+          await figma.loadFontAsync({ family: "Inter", style: "Bold" });
+          logo.fontName = { family: "Inter", style: "Bold" };
+          logo.fontSize = 20;
+          logo.characters = properties.title || 'Logo';
+          
+          // Add to page to get dimensions
+          parentFrame ? parentFrame.appendChild(logo) : parentPage.appendChild(logo);
+          
+          // Position on the left of navbar
+          logo.x = navbar.x + 24;
+          logo.y = navbar.y + (navbar.height - logo.height) / 2;
+          
+          navElements.push(logo);
+          
+          // Create nav links as individual text nodes
+          await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+          
+          const links = properties.links || ['Home', 'About', 'Services', 'Contact'];
+          const spacing = 24;
+          
+          // Calculate total width of all links with spacing
+          let totalWidth = 0;
+          const linkNodes: TextNode[] = [];
+          
+          for (const linkText of links) {
+            const link = figma.createText();
+            link.fontName = { family: "Inter", style: "Regular" };
+            link.characters = linkText;
+            
+            // Add to page to get dimensions
+            parentFrame ? parentFrame.appendChild(link) : parentPage.appendChild(link);
+            
+            totalWidth += link.width + spacing;
+            linkNodes.push(link);
+            navElements.push(link);
+          }
+          
+          // Position the links on the right of the navbar
+          let xOffset = navbar.x + navbar.width - totalWidth - 24;
+          
+          for (const link of linkNodes) {
+            link.y = navbar.y + (navbar.height - link.height) / 2;
+            link.x = xOffset;
+            xOffset += link.width + spacing;
+          }
+        } catch (e) {
+          console.warn('Error creating navbar items:', e);
+        }
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(navbar, enrichedStyles);
+        
+        // Group all elements
+        if (parentFrame) {
+          const group = figma.group(navElements, parentFrame);
+          group.name = properties.name || 'Navbar Group';
+          createdNode = group;
+        } else {
+          const group = figma.group(navElements, parentPage);
+          group.name = properties.name || 'Navbar Group';
+          createdNode = group;
+        }
+        break;
+      }
+      
+      case 'RECTANGLE': {
+        // Create a rectangle
+        const rect = figma.createRectangle();
+        rect.name = properties.name || 'Rectangle';
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(rect);
   } else {
-    card.cornerRadius = 8; // Default radius
+          parentPage.appendChild(rect);
+        }
+        
+        // Set size
+        const width = enrichedStyles.width || 100;
+        const height = enrichedStyles.height || 100;
+        rect.resize(width, height);
+        
+        // Basic styling
+        rect.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 } }];
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(rect, enrichedStyles);
+        
+        createdNode = rect;
+        break;
+      }
+      
+      case 'ELLIPSE': {
+        // Create an ellipse
+        const ellipse = figma.createEllipse();
+        ellipse.name = properties.name || 'Ellipse';
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(ellipse);
+        } else {
+          parentPage.appendChild(ellipse);
+        }
+        
+        // Set size
+        const width = enrichedStyles.width || 100;
+        const height = enrichedStyles.height || 100;
+        ellipse.resize(width, height);
+        
+        // Basic styling
+        ellipse.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 } }];
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(ellipse, enrichedStyles);
+        
+        createdNode = ellipse;
+        break;
+      }
+      
+      case 'POLYGON': {
+        // Create a polygon
+        const polygon = figma.createPolygon();
+        polygon.name = properties.name || 'Polygon';
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(polygon);
+        } else {
+          parentPage.appendChild(polygon);
+        }
+        
+        // Set size
+        const size = enrichedStyles.width || 100;
+        polygon.resize(size, size);
+        
+        // Set point count if specified
+        if (properties.pointCount && typeof properties.pointCount === 'number') {
+          polygon.pointCount = Math.max(3, Math.min(12, properties.pointCount));
+        }
+        
+        // Basic styling
+        polygon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 } }];
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(polygon, enrichedStyles);
+        
+        createdNode = polygon;
+        break;
+      }
+      
+      case 'STAR': {
+        // Create a star
+        const star = figma.createStar();
+        star.name = properties.name || 'Star';
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(star);
+        } else {
+          parentPage.appendChild(star);
+        }
+        
+        // Set size
+        const size = enrichedStyles.width || 100;
+        star.resize(size, size);
+        
+        // Set point count if specified
+        if (properties.pointCount && typeof properties.pointCount === 'number') {
+          star.pointCount = Math.max(3, Math.min(20, properties.pointCount));
+        }
+        
+        // Basic styling
+        star.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 } }];
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(star, enrichedStyles);
+        
+        createdNode = star;
+        break;
+      }
+      
+      case 'LINE': {
+        // Create a line (rectangle with minimal height)
+        const line = figma.createLine();
+        line.name = properties.name || 'Line';
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(line);
+        } else {
+          parentPage.appendChild(line);
+        }
+        
+        // Set length
+        const length = enrichedStyles.width || 100;
+        line.resize(length, 0);
+        
+        // Set stroke properties
+        line.strokes = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }];
+        line.strokeWeight = properties.strokeWeight || 1;
+        
+        if (properties.strokeCap) {
+          line.strokeCap = properties.strokeCap as StrokeCap;
+        }
+        
+        // Apply basic styles instead of shape-specific
+        await applyExtendedStyles(line, enrichedStyles);
+        
+        createdNode = line;
+        break;
+      }
+      
+      case 'VECTOR': {
+        // Create a vector
+        const vector = figma.createVector();
+        vector.name = properties.name || 'Vector';
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(vector);
+        } else {
+          parentPage.appendChild(vector);
+        }
+        
+        // Set size
+        const width = enrichedStyles.width || 100;
+        const height = enrichedStyles.height || 100;
+        vector.resize(width, height);
+        
+        // Basic styling
+        vector.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 } }];
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(vector, enrichedStyles);
+        
+        createdNode = vector;
+        break;
+      }
+      
+      case 'CUSTOM': {
+        // Create a rectangle for simpler custom element
+        const customShape = figma.createRectangle();
+        customShape.name = properties.name || 'Custom Element';
+        
+        // Add to parent
+        if (parentFrame) {
+          parentFrame.appendChild(customShape);
+        } else {
+          parentPage.appendChild(customShape);
+        }
+        
+        // Set size
+        const width = enrichedStyles.width || 400;
+        const height = enrichedStyles.height || 300;
+        customShape.resize(width, height);
+        
+        // Basic styling
+        customShape.fills = [{ type: 'SOLID', color: { r: 0.98, g: 0.98, b: 0.98 } }];
+        customShape.cornerRadius = 8;
+        
+        // Apply extended styles
+        await applyExtendedShapeStyles(customShape, enrichedStyles);
+        
+        // Add content if provided
+        let contentNode: TextNode | undefined = undefined;
+        if (properties.text || properties.content) {
+          try {
+            // Create a text node for the content
+            const text = figma.createText();
+            await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+            text.fontName = { family: "Inter", style: "Regular" };
+            text.characters = properties.text || properties.content;
+            
+            // Add to page first to get dimensions
+            parentFrame ? parentFrame.appendChild(text) : parentPage.appendChild(text);
+            
+            // Position inside the custom shape
+            text.x = customShape.x + 16;
+            text.y = customShape.y + 16;
+            
+            // Resize to fit content
+            text.resize(width - 32, text.height);
+            
+            contentNode = text;
+          } catch (e) {
+            console.warn('Error adding text to custom element:', e);
+          }
+        }
+        
+        // Group if text was added
+        if (contentNode) {
+          const group = parentFrame 
+            ? figma.group([customShape, contentNode], parentFrame)
+            : figma.group([customShape, contentNode], parentPage);
+          group.name = properties.name || 'Custom Element Group';
+          createdNode = group;
+        } else {
+          createdNode = customShape;
+        }
+        break;
+      }
+      
+      default:
+        return createErrorResponse(`Unsupported element type: ${nodeType}`);
+    }
+    
+    // Check if we successfully created a node
+    if (!createdNode) {
+      return createErrorResponse(`Failed to create element of type: ${nodeType}`);
+    }
+    
+    // Add the node to the session state's created wireframes if applicable
+    const wireframeId = sessionState.activeWireframeId;
+    if (wireframeId) {
+      sessionState.addNodeToWireframe(wireframeId, createdNode);
+    }
+    
+    // Get detailed node properties to return
+    const nodeDetails = getNodeDetails(createdNode);
+    
+    // Return the created node information
+    return createSuccessResponse({
+      id: createdNode.id,
+      type: createdNode.type,
+      name: createdNode.name,
+      properties: nodeDetails
+    });
+  } catch (error) {
+    console.error('Error in handleAddElement', error);
+    return createErrorResponse(`Error adding element: ${error instanceof Error ? error.message : String(error)}`);
   }
-  
-  // Setup auto layout
-  card.layoutMode = 'VERTICAL';
-  card.itemSpacing = 16;
-  card.paddingLeft = 16;
-  card.paddingRight = 16;
-  card.paddingTop = 16;
-  card.paddingBottom = 16;
-  
-  // Load font before creating text elements
-  await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-  
-  // Create image placeholder if needed
-  if (properties.image) {
-    const imagePlaceholder = figma.createRectangle();
-    card.appendChild(imagePlaceholder);
-    imagePlaceholder.name = 'Image';
-    imagePlaceholder.resize(width - 32, 150);
-  }
-  
-  // Create title if needed
-  if (properties.title) {
-    const titleText = figma.createText();
-    card.appendChild(titleText);
-    titleText.characters = properties.title;
-  }
-  
-  // Create description if needed
-  if (properties.description) {
-    const descriptionText = figma.createText();
-    card.appendChild(descriptionText);
-    descriptionText.characters = properties.description;
-  }
-  
-  return card;
 }
 
 /**
@@ -1935,7 +1905,7 @@ async function handleStyleElement(message: PluginMessage): Promise<void> {
       throw new Error('No element ID provided and no selection exists');
     }
   } else {
-    // Get the element to style
+  // Get the element to style
     targetElement = figma.getNodeById(elementId);
     if (!targetElement) {
       console.warn(`Element with ID ${elementId} not found, checking selection`);
@@ -2595,3 +2565,49 @@ figma.on('run', ({ command }) => {
     data: { command: commandType }
   });
 }); 
+
+/**
+ * Helper function to get detailed properties for any node
+ */
+function getNodeDetails(node: SceneNode): Record<string, any> {
+  const baseDetails: Record<string, any> = {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    visible: node.visible
+  };
+  
+  // Add position and size if available
+  if ('x' in node) baseDetails.x = node.x;
+  if ('y' in node) baseDetails.y = node.y;
+  if ('width' in node) baseDetails.width = node.width;
+  if ('height' in node) baseDetails.height = node.height;
+  
+  // Add fills if available
+  if ('fills' in node) baseDetails.fills = node.fills;
+  
+  // Add text specific properties
+  if (node.type === 'TEXT') {
+    const textNode = node as TextNode;
+    baseDetails.characters = textNode.characters;
+    baseDetails.fontSize = textNode.fontSize;
+    baseDetails.fontName = textNode.fontName;
+    baseDetails.textAlignHorizontal = textNode.textAlignHorizontal;
+    baseDetails.textAlignVertical = textNode.textAlignVertical;
+  }
+  
+  // Add frame specific properties
+  if (node.type === 'FRAME') {
+    const frameNode = node as FrameNode;
+    baseDetails.cornerRadius = frameNode.cornerRadius;
+    baseDetails.layoutMode = frameNode.layoutMode;
+    baseDetails.counterAxisSizingMode = frameNode.counterAxisSizingMode;
+    baseDetails.itemSpacing = frameNode.itemSpacing;
+    baseDetails.paddingLeft = frameNode.paddingLeft;
+    baseDetails.paddingRight = frameNode.paddingRight;
+    baseDetails.paddingTop = frameNode.paddingTop;
+    baseDetails.paddingBottom = frameNode.paddingBottom;
+  }
+  
+  return baseDetails;
+}

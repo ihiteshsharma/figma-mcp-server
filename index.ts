@@ -386,7 +386,7 @@ async function initializePlugin() {
   } catch (error) {
     logger.error('Failed to initialize plugin bridge', error as Error);
     throw error;
-  }
+}
 }
 
 // Type guards for tool arguments
@@ -466,9 +466,9 @@ function isExportDesignArgs(args: unknown): args is {
 async function createFigmaFrame(name: string, width: number = 1920, height: number = 1080, background: string = "#FFFFFF"): Promise<string> {
   try {
     logger.info('Creating Figma frame', { 
-      name, 
+        name,
       dimensions: { width, height }, 
-      background 
+        background
     });
     
     const command: PluginCommand = {
@@ -515,8 +515,8 @@ async function createFigmaComponent(
   try {
     logger.info('Creating Figma component', { 
       type, 
-      description, 
-      style, 
+        description,
+        style,
       parentNodeId 
     });
     
@@ -617,9 +617,9 @@ async function styleFigmaNode(
       payload: {
         elementId: nodeId, // This can be undefined - plugin will use selection
         styles: {
-          description: styleDescription,
-          fill: fillColor,
-          stroke: strokeColor,
+        description: styleDescription,
+        fill: fillColor,
+        stroke: strokeColor,
           ...textProps
         }
       },
@@ -651,7 +651,8 @@ async function styleFigmaNode(
 async function generateFigmaDesign(
   prompt: string,
   type: string,
-  style: string = "modern"
+  style: string = "modern",
+  request?: { id?: string | number }
 ): Promise<string> {
   try {
     logger.info('Generating Figma design', { 
@@ -692,6 +693,22 @@ async function generateFigmaDesign(
       id: `design_${Date.now()}`
     };
     
+    // Store the current MCP request ID if available
+    let mcpRequestId: number | undefined;
+    if (request?.id !== undefined) {
+      // Convert string ID to number if needed
+      mcpRequestId = typeof request.id === 'string' ? 
+        parseInt(request.id, 10) : 
+        (typeof request.id === 'number' ? request.id : undefined);
+        
+      if (mcpRequestId !== undefined && !isNaN(mcpRequestId) && command.id) {
+        const pluginBridge = getPluginBridge();
+        pluginBridge.storeMcpRequestId(command.id, mcpRequestId);
+      } else {
+        mcpRequestId = undefined;
+      }
+    }
+    
     const response = await sendPluginCommand<PluginResponse>(command);
     
     if (!response.success) {
@@ -716,32 +733,162 @@ async function generateFigmaDesign(
       // Parse the prompt to determine what UI elements to create
       const elementsToCreate = breakDownPromptIntoElements(prompt, type, style);
       
-      // Create each element in sequence
-      for (const element of elementsToCreate) {
+      // Map to store created element IDs for parent-child relationships
+      const elementIdMap: {[key: string]: string} = {};
+      
+      // Track the current vertical position for automatic positioning
+      let currentY = 0;
+      const padding = 24;
+      
+      // Create each element in sequence based on their hierarchy
+      for (let i = 0; i < elementsToCreate.length; i++) {
         try {
-          logger.debug(`Creating element: ${element.type}`, element);
+          const element = elementsToCreate[i];
+          logger.debug(`Creating element ${i+1}/${elementsToCreate.length}: ${element.type}`, element);
           
-          await createFigmaComponent(
-            element.type,
-            element.description,
-            style,
-            firstPageId
-          );
+          // Generate a unique ID for this element command
+          const elementCommandId = `${command.id}_elem_${i}`;
+          
+          // Store mapping for MCP response handling if mcpRequestId is available
+          if (mcpRequestId !== undefined && !isNaN(mcpRequestId) && elementCommandId) {
+            const pluginBridge = getPluginBridge();
+            pluginBridge.storeMcpRequestId(elementCommandId, mcpRequestId);
+          }
+          
+          // Determine parent ID - use element.childOf if defined and we have its ID
+          let parentId = firstPageId; // Default to the main page
+          if (element.childOf && elementIdMap[element.childOf]) {
+            parentId = elementIdMap[element.childOf];
+            logger.debug(`Using parent ${element.childOf} with ID ${parentId}`);
+          }
+          
+          // For auto-positioning without explicit coordinates, calculate based on current Y
+          if (!element.position) {
+            element.position = {
+              x: padding,
+              y: currentY + padding,
+              width: type === 'mobile app' ? 375 - (padding * 2) : 1200,
+              height: element.type === 'navbar' ? 80 : 300
+            };
+          }
+          
+          // Make sure position is defined before accessing its properties
+          if (element.position) {
+            // Adjust height based on element type
+            if (element.type === 'button') element.position.height = 50;
+            if (element.type === 'input') element.position.height = 40;
+            if (element.type === 'text') element.position.height = 24;
+            
+            // Update currentY for next element - use default if height is undefined
+            const elementHeight = element.position.height || 100; // Default height if undefined
+            currentY += elementHeight + padding;
+          }
+          
+          // Define enhanced styles based on element type and design style
+          const enhancedStyles = {
+            ...(element.styles || {}),
+          };
+          
+          // Add color palette based on design style
+          if (style === 'minimal') {
+            enhancedStyles.colorPalette = {
+              primary: '#0070f3',
+              secondary: '#7928ca',
+              background: '#ffffff',
+              text: '#111111',
+              textSecondary: '#6b7280',
+              border: '#e5e7eb'
+            };
+          } else if (style === 'colorful') {
+            enhancedStyles.colorPalette = {
+              primary: '#ff4500',
+              secondary: '#00b8d4',
+              background: '#f8f9fa',
+              text: '#212529',
+              textSecondary: '#6c757d',
+              border: '#dee2e6'
+            };
+          } else if (style === 'corporate') {
+            enhancedStyles.colorPalette = {
+              primary: '#003366',
+              secondary: '#336699',
+              background: '#ffffff',
+              text: '#1a1a1a',
+              textSecondary: '#666666',
+              border: '#cccccc'
+            };
+          }
+          
+          // Create the element command with full styling information
+          const elementCommand: PluginCommand = {
+            type: 'ADD_ELEMENT',
+            payload: {
+              elementType: element.type.toUpperCase(),
+              parent: parentId,
+              properties: {
+                name: `${element.type} - ${element.description.substring(0, 20)}...`,
+                text: element.description,
+                content: element.description,
+                style: style,
+                position: element.position,
+                layoutPosition: element.layoutPosition,
+                styles: enhancedStyles,
+                parentType: element.parentType
+              }
+            },
+            id: elementCommandId
+          };
+          
+          logger.debug(`Sending command to create ${element.type}`, elementCommand);
+          
+          // Send the command and await response
+          const elementResponse = await sendPluginCommand<PluginResponse>(elementCommand);
+          
+          // Store the created element ID for future parent references
+          if (elementResponse.success && elementResponse.data?.id) {
+            // Store identifier for this element
+            const elementKey = element.type === 'frame' && i === 0 ? 
+                             'main-container' : // First frame is main container
+                             `${element.type}-${i}`; // Otherwise use type-index
+                             
+            elementIdMap[elementKey] = elementResponse.data.id;
+            
+            // Register special container elements for hierarchical references
+            if (i === 0 && element.type === 'frame') {
+              if (type === 'website' || type === 'landing page') {
+                elementIdMap['main-container'] = elementResponse.data.id;
+              } else if (type === 'mobile app') {
+                elementIdMap['app-container'] = elementResponse.data.id;
+              } else if (type === 'dashboard') {
+                elementIdMap['dashboard-container'] = elementResponse.data.id;
+              }
+            }
+            
+            // Register content container if description matches
+            if (element.description.toLowerCase().includes('content')) {
+              elementIdMap['content-container'] = elementResponse.data.id;
+              elementIdMap['dashboard-content'] = elementResponse.data.id;
+            }
+            
+            logger.debug(`Created element ${elementKey} with ID ${elementResponse.data.id}`);
+          } else {
+            logger.warn(`Failed to create element ${i}`, elementResponse.error);
+          }
           
           // Small delay to allow Figma to process each element
-          await new Promise(resolve => setTimeout(resolve, 200));
+          await new Promise(resolve => setTimeout(resolve, 300));
           
         } catch (elemError) {
           logger.warn(
-            `Failed to create element: ${element.type}`,
-            { element },
+            `Failed to create element: ${elementsToCreate[i].type}`,
+            { element: elementsToCreate[i] },
             elemError as Error
           );
           // Continue despite element creation errors
         }
       }
       
-      logger.info('Added all components to design');
+      logger.info('Added all components to design', { elementCount: elementsToCreate.length });
     }
     
     return response.data?.wireframeId || response.data?.pageIds?.[0] || 'unknown-id';
@@ -751,585 +898,443 @@ async function generateFigmaDesign(
   }
 }
 
-// Helper function to break down a prompt into specific UI elements
-function breakDownPromptIntoElements(prompt: string, type: string, style: string): Array<{
-  type: string, 
-  description: string,
-  position?: {x: number, y: number, width?: number, height?: number},
-  parentType?: string,
-  childOf?: string,
-  layoutPosition?: 'top' | 'bottom' | 'left' | 'right' | 'center',
-  styles?: {[key: string]: any}
-}> {
-  const elements: Array<{
-    type: string, 
-    description: string,
-    position?: {x: number, y: number, width?: number, height?: number},
-    parentType?: string,
-    childOf?: string,
-    layoutPosition?: 'top' | 'bottom' | 'left' | 'right' | 'center',
-    styles?: {[key: string]: any}
-  }> = [];
+// Break down the prompt into UI elements
+function breakDownPromptIntoElements(prompt: string, type: string, style: string): any[] {
+  const elements: any[] = [];
+  let content = prompt.toLowerCase();
   
-  // Track rootContainer to use as parent for child elements
-  let rootContainer = '';
-  let currentY = 0;
-  const defaultMargin = 24;
-  const containerWidth = type === 'mobile app' ? 375 : 1200;
-  const pageWidth = type === 'mobile app' ? 375 : 1440;
+  // Design system specifications
+  const designSpec = {
+    colorScheme: {
+      primary: '#1E88E5', // Default blue
+      secondary: '#F5F7FA', // Light gray accent
+      background: '#FFFFFF',
+      text: '#333333',
+      textSecondary: '#757575'
+    },
+    typography: {
+      fontFamily: 'Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      fontSizes: {
+        small: 12,
+        normal: 14,
+        medium: 16,
+        large: 18,
+        xlarge: 24,
+        xxlarge: 32
+      }
+    },
+    spacing: {
+      small: 8,
+      medium: 16,
+      large: 24,
+      xlarge: 32
+    }
+  };
   
-  // Default elements based on design type
-  if (type === 'website' || type === 'landing page') {
-    // Create main container first
-    rootContainer = 'main-container';
-    elements.push({
-      type: 'frame',
-      description: `Main ${type} layout container`,
-      position: { 
-        x: (pageWidth - containerWidth) / 2, 
-        y: 0, 
-        width: containerWidth, 
-        height: 2000 // We'll adjust this based on content
-      },
-      styles: {
-        fill: "#FFFFFF",
-        cornerRadius: 0,
-        layout: "VERTICAL",
-        itemSpacing: 48,
-        paddingTop: 0,
-        paddingBottom: 64,
-        paddingLeft: 0,
-        paddingRight: 0
-      }
-    });
-    
-    currentY = 0;
-    
-    // Always add header/navbar first
-    elements.push({
-      type: 'navbar',
-      description: `Navigation bar for ${type} with logo, links, and call to action`,
-      position: { x: 0, y: currentY, width: containerWidth, height: 80 },
-      childOf: rootContainer,
-      layoutPosition: 'top',
-      styles: {
-        fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
-        layout: "HORIZONTAL",
-        itemSpacing: 24,
-        paddingLeft: 24,
-        paddingRight: 24,
-        paddingTop: 16,
-        paddingBottom: 16,
-        justifyContent: "SPACE_BETWEEN"
-      }
-    });
-    
-    currentY += 80 + defaultMargin;
-    
-    // Check for specific sections in the prompt
-    if (prompt.toLowerCase().includes('hero') || !prompt.toLowerCase().includes('section')) {
-      elements.push({
-        type: 'frame',
-        description: `Hero section with headline, subheading, and main CTA button`,
-        position: { x: 0, y: currentY, width: containerWidth, height: 400 },
-        childOf: rootContainer,
-        layoutPosition: 'top',
-        styles: {
-          fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
-          cornerRadius: 8,
-          layout: "VERTICAL",
-          itemSpacing: 24,
-          paddingTop: 64,
-          paddingBottom: 64,
-          paddingLeft: 24,
-          paddingRight: 24,
-          justifyContent: "CENTER",
-          alignItems: "CENTER"
-        }
-      });
-      
-      currentY += 400 + defaultMargin;
-    }
-    
-    if (prompt.toLowerCase().includes('feature') || prompt.toLowerCase().includes('product')) {
-      elements.push({
-        type: 'frame',
-        description: `Features section with 3 columns of feature highlights`,
-        position: { x: 0, y: currentY, width: containerWidth, height: 400 },
-        childOf: rootContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: "#FFFFFF",
-          layout: "VERTICAL",
-          itemSpacing: 32,
-          paddingTop: 64,
-          paddingBottom: 64,
-          paddingLeft: 24,
-          paddingRight: 24
-        }
-      });
-      
-      currentY += 400 + defaultMargin;
-    }
-    
-    if (prompt.toLowerCase().includes('pricing')) {
-      elements.push({
-        type: 'frame',
-        description: `Pricing section with 3 pricing tiers in card layout`,
-        position: { x: 0, y: currentY, width: containerWidth, height: 500 },
-        childOf: rootContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
-          layout: "VERTICAL",
-          itemSpacing: 32,
-          paddingTop: 64,
-          paddingBottom: 64,
-          paddingLeft: 24,
-          paddingRight: 24
-        }
-      });
-      
-      currentY += 500 + defaultMargin;
-    }
-    
-    if (prompt.toLowerCase().includes('testimonial') || prompt.toLowerCase().includes('review')) {
-      elements.push({
-        type: 'frame',
-        description: `Testimonials section with customer quotes`,
-        position: { x: 0, y: currentY, width: containerWidth, height: 300 },
-        childOf: rootContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: style === 'minimal' ? "#F8F9FA" : "#FFFFFF",
-          layout: "VERTICAL",
-          itemSpacing: 24,
-          paddingTop: 48,
-          paddingBottom: 48,
-          paddingLeft: 24,
-          paddingRight: 24
-        }
-      });
-      
-      currentY += 300 + defaultMargin;
-    }
-    
-    if (prompt.toLowerCase().includes('contact') || prompt.toLowerCase().includes('form')) {
-      elements.push({
-        type: 'form',
-        description: `Contact form with name, email, subject and message fields`,
-        position: { x: 0, y: currentY, width: containerWidth, height: 400 },
-        childOf: rootContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: "#FFFFFF",
-          cornerRadius: 8,
-          layout: "VERTICAL",
-          itemSpacing: 16,
-          paddingTop: 32,
-          paddingBottom: 32,
-          paddingLeft: 24,
-          paddingRight: 24
-        }
-      });
-      
-      currentY += 400 + defaultMargin;
-    }
-    
-    // Always add footer last
-    elements.push({
-      type: 'frame',
-      description: `Footer with company info, navigation links, and social media icons`,
-      position: { x: 0, y: currentY, width: containerWidth, height: 200 },
-      childOf: rootContainer,
-      layoutPosition: 'bottom',
-      styles: {
-        fill: "#212529",
-        layout: "VERTICAL",
-        itemSpacing: 24,
-        paddingTop: 48,
-        paddingBottom: 48,
-        paddingLeft: 24,
-        paddingRight: 24,
-        color: "#FFFFFF"
-      }
-    });
-    
-    // Update the main container's height to fit all content
-    elements[0].position!.height = currentY + 200 + defaultMargin;
-  } 
-  else if (type === 'mobile app') {
-    // For mobile app designs, create a single-column layout
-    rootContainer = 'app-container';
-    elements.push({
-      type: 'frame',
-      description: `Mobile app screen container`,
-      position: { 
-        x: (pageWidth - 375) / 2, 
-        y: 0, 
-        width: 375, 
-        height: 812 
-      },
-      styles: {
-        fill: "#FFFFFF",
-        cornerRadius: 0,
-        layout: "VERTICAL",
-        itemSpacing: 0,
-        paddingTop: 0,
-        paddingBottom: 0,
-        paddingLeft: 0,
-        paddingRight: 0
-      }
-    });
-    
-    currentY = 0;
-    
-    // Status bar
-    elements.push({
-      type: 'frame',
-      description: `Status bar and app header with title and navigation controls`,
-      position: { x: 0, y: currentY, width: 375, height: 80 },
-      childOf: rootContainer,
-      layoutPosition: 'top',
-      styles: {
-        fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
-        layout: "HORIZONTAL",
-        itemSpacing: 16,
-        paddingLeft: 16,
-        paddingRight: 16,
-        paddingTop: 16,
-        paddingBottom: 16,
-        justifyContent: "SPACE_BETWEEN"
-      }
-    });
-    
-    currentY += 80;
-    
-    if (prompt.toLowerCase().includes('login') || prompt.toLowerCase().includes('sign')) {
-      elements.push({
-        type: 'form',
-        description: `Login form with username/email and password fields`,
-        position: { x: 0, y: currentY, width: 375, height: 320 },
-        childOf: rootContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: "#FFFFFF",
-          layout: "VERTICAL",
-          itemSpacing: 16,
-          paddingTop: 32,
-          paddingBottom: 32,
-          paddingLeft: 24,
-          paddingRight: 24
-        }
-      });
-      
-      currentY += 320;
-    }
-    
-    if (prompt.toLowerCase().includes('feed') || prompt.toLowerCase().includes('timeline')) {
-      elements.push({
-        type: 'frame',
-        description: `Content feed with scrollable items and interaction elements`,
-        position: { x: 0, y: currentY, width: 375, height: 450 },
-        childOf: rootContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: "#FFFFFF",
-          layout: "VERTICAL",
-          itemSpacing: 16,
-          paddingTop: 16,
-          paddingBottom: 16,
-          paddingLeft: 16,
-          paddingRight: 16
-        }
-      });
-      
-      currentY += 450;
-    }
-    
-    if (prompt.toLowerCase().includes('profile')) {
-      elements.push({
-        type: 'frame',
-        description: `User profile section with avatar, user info, and stats`,
-        position: { x: 0, y: currentY, width: 375, height: 400 },
-        childOf: rootContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: "#FFFFFF",
-          layout: "VERTICAL",
-          itemSpacing: 16,
-          paddingTop: 24,
-          paddingBottom: 24,
-          paddingLeft: 24,
-          paddingRight: 24
-        }
-      });
-      
-      currentY += 400;
-    }
-    
-    if (prompt.toLowerCase().includes('settings')) {
-      elements.push({
-        type: 'frame',
-        description: `Settings screen with toggle switches and preference options`,
-        position: { x: 0, y: currentY, width: 375, height: 400 },
-        childOf: rootContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: "#FFFFFF",
-          layout: "VERTICAL",
-          itemSpacing: 16,
-          paddingTop: 24,
-          paddingBottom: 24,
-          paddingLeft: 24,
-          paddingRight: 24
-        }
-      });
-      
-      currentY += 400;
-    }
-    
-    // Tab bar
-    elements.push({
-      type: 'frame',
-      description: `Bottom navigation bar with main app sections`,
-      position: { x: 0, y: 732, width: 375, height: 80 },
-      childOf: rootContainer,
-      layoutPosition: 'bottom',
-      styles: {
-        fill: style === 'minimal' ? "#FFFFFF" : "#F8F9FA",
-        layout: "HORIZONTAL",
-        itemSpacing: 0,
-        paddingLeft: 0,
-        paddingRight: 0,
-        paddingTop: 0,
-        paddingBottom: 0,
-        justifyContent: "SPACE_AROUND"
-      }
-    });
-  }
-  else if (type === 'dashboard') {
-    // For dashboard designs
-    rootContainer = 'dashboard-container';
-    elements.push({
-      type: 'frame',
-      description: `Dashboard layout container`,
-      position: { 
-        x: 0, 
-        y: 0, 
-        width: pageWidth, 
-        height: 900 
-      },
-      styles: {
-        fill: style === 'minimal' ? "#F8F9FA" : "#FFFFFF",
-        cornerRadius: 0,
-        layout: "HORIZONTAL",
-        itemSpacing: 0,
-        paddingTop: 0,
-        paddingBottom: 0,
-        paddingLeft: 0,
-        paddingRight: 0
-      }
-    });
-    
-    // Sidebar first (left side)
-    elements.push({
-      type: 'frame',
-      description: `Sidebar navigation with main dashboard sections`,
-      position: { x: 0, y: 0, width: 240, height: 900 },
-      childOf: rootContainer,
-      layoutPosition: 'left',
-      styles: {
-        fill: style === 'minimal' ? "#FFFFFF" : "#212529",
-        layout: "VERTICAL",
-        itemSpacing: 8,
-        paddingLeft: 16,
-        paddingRight: 16,
-        paddingTop: 24,
-        paddingBottom: 24,
-        color: style === 'minimal' ? "#212529" : "#FFFFFF"
-      }
-    });
-    
-    // Header (top right)
-    elements.push({
-      type: 'navbar',
-      description: `Dashboard header with logo, search, and user profile`,
-      position: { x: 240, y: 0, width: pageWidth - 240, height: 64 },
-      childOf: rootContainer,
-      layoutPosition: 'top',
-      styles: {
-        fill: "#FFFFFF",
-        layout: "HORIZONTAL",
-        itemSpacing: 24,
-        paddingLeft: 24,
-        paddingRight: 24,
-        paddingTop: 12,
-        paddingBottom: 12,
-        justifyContent: "SPACE_BETWEEN"
-      }
-    });
-    
-    // Main content container
-    const mainContentContainer = 'dashboard-content';
-    elements.push({
-      type: 'frame',
-      description: `Main dashboard content area`,
-      position: { x: 240, y: 64, width: pageWidth - 240, height: 836 },
-      childOf: rootContainer,
-      layoutPosition: 'center',
-      styles: {
-        fill: "#F8F9FA",
-        layout: "VERTICAL",
-        itemSpacing: 24,
-        paddingLeft: 24,
-        paddingRight: 24,
-        paddingTop: 24,
-        paddingBottom: 24
-      }
-    });
-    
-    // Stats cards
-    elements.push({
-      type: 'frame',
-      description: `Stats overview with 4 key metric cards`,
-      position: { x: 0, y: 0, width: pageWidth - 240 - 48, height: 120 },
-      childOf: mainContentContainer,
-      layoutPosition: 'top',
-      styles: {
-        fill: "transparent",
-        layout: "HORIZONTAL",
-        itemSpacing: 24,
-        paddingLeft: 0,
-        paddingRight: 0,
-        paddingTop: 0,
-        paddingBottom: 0,
-        justifyContent: "SPACE_BETWEEN"
-      }
-    });
-    
-    if (prompt.toLowerCase().includes('chart') || prompt.toLowerCase().includes('graph')) {
-      elements.push({
-        type: 'frame',
-        description: `Chart section with multiple data visualizations`,
-        position: { x: 0, y: 144, width: pageWidth - 240 - 48, height: 300 },
-        childOf: mainContentContainer,
-        layoutPosition: 'center',
-        styles: {
-          fill: "#FFFFFF",
-          cornerRadius: 8,
-          layout: "VERTICAL",
-          itemSpacing: 16,
-          paddingTop: 16,
-          paddingBottom: 16,
-          paddingLeft: 16,
-          paddingRight: 16
-        }
-      });
-    }
-    
-    if (prompt.toLowerCase().includes('table') || prompt.toLowerCase().includes('list')) {
-      elements.push({
-        type: 'frame',
-        description: `Data table with paginated results and sorting options`,
-        position: { x: 0, y: 468, width: pageWidth - 240 - 48, height: 344 },
-        childOf: mainContentContainer,
-        layoutPosition: 'bottom',
-        styles: {
-          fill: "#FFFFFF",
-          cornerRadius: 8,
-          layout: "VERTICAL",
-          itemSpacing: 0,
-          paddingTop: 16,
-          paddingBottom: 16,
-          paddingLeft: 16,
-          paddingRight: 16
-        }
-      });
-    }
-  }
-  
-  // Process elements mentioned in the prompt
-  const lines = prompt.split('\n');
-  for (const line of lines) {
-    const trimmedLine = line.trim();
-    
-    // Skip empty lines or numbered bullets without content
-    if (!trimmedLine || /^\d+\.?\s*$/.test(trimmedLine)) continue;
-    
-    // Remove numbering from the start of the line
-    const content = trimmedLine.replace(/^\d+\.?\s*/, '').trim();
-    if (!content) continue;
-    
-    // Check for identifiable UI elements in this line
-    if (content.toLowerCase().includes('header') && !elements.some(e => e.type === 'navbar')) {
-      elements.unshift({
-        type: 'navbar',
-        description: content
-      });
-      continue;
-    }
-    
-    if (content.toLowerCase().includes('footer') && !elements.some(e => e.description.toLowerCase().includes('footer'))) {
-      elements.push({
-        type: 'frame',
-        description: content
-      });
-      continue;
-    }
-    
-    if ((content.toLowerCase().includes('button') || content.toLowerCase().includes('cta')) && 
-        !elements.some(e => e.type === 'button' && e.description.includes(content))) {
-      elements.push({
-        type: 'button',
-        description: content
-      });
-      continue;
-    }
-    
-    if ((content.toLowerCase().includes('form') || content.toLowerCase().includes('input') || 
-         content.toLowerCase().includes('field')) && 
-        !elements.some(e => e.type === 'form' && e.description.includes(content))) {
-      elements.push({
-        type: 'form',
-        description: content
-      });
-      continue;
-    }
-    
-    if ((content.toLowerCase().includes('navigation') || content.toLowerCase().includes('breadcrumb') || 
-         content.toLowerCase().includes('menu')) && 
-        !elements.some(e => e.type === 'navbar' && e.description.includes(content))) {
-      elements.push({
-        type: 'navbar',
-        description: content
-      });
-      continue;
-    }
-    
-    // If the line contains a description of a section but hasn't been categorized yet,
-    // add it as a generic frame
-    if (content.toLowerCase().includes('section') || 
-        content.toLowerCase().includes('area') || 
-        content.toLowerCase().includes('container') ||
-        content.length > 20) {
-      elements.push({
-        type: 'frame',
-        description: content
-      });
-    }
-  }
-  
-  // Make sure all elements have appropriate IDs for parent-child relationships
-  elements.forEach((element, index) => {
-    if (!element.childOf && index > 0) {
-      // If no parent is specified and it's not the root container,
-      // set the parent to the root container
-      element.childOf = rootContainer;
+  // First, create a main container based on the type
+  elements.push({
+    type: 'frame',
+    description: `Main container for ${type}`,
+    childOf: null,
+    parentType: null,
+    position: {
+      x: 0,
+      y: 0,
+      width: type === 'mobile app' ? 375 : 1440,
+      height: type === 'mobile app' ? 812 : 900
+    },
+    styles: {
+      fillColor: designSpec.colorScheme.background,
+      cornerRadius: type === 'mobile app' ? 0 : 0,
+      colorPalette: designSpec.colorScheme,
+      typographySystem: designSpec.typography
     }
   });
   
-  logger.debug(`Broke down prompt into ${elements.length} elements with hierarchy`, { elements });
+  // Create layout regions based on type
+  // For websites/landing pages
+  if (type === 'website' || type === 'landing page') {
+    // Add header/navbar
+    elements.push({
+      type: 'navbar',
+      description: 'Navigation Bar',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'top',
+      styles: {
+        fillColor: designSpec.colorScheme.primary,
+        textColor: '#FFFFFF',
+        paddingVertical: designSpec.spacing.medium,
+        paddingHorizontal: designSpec.spacing.large
+      }
+    });
+    
+    // Add a clean text for the title in navbar
+    elements.push({
+      type: 'text',
+      description: 'Brand Name', // Clean text content
+      displayText: 'Brand Name', // What will actually display in the Figma design
+      childOf: 'navbar-0',
+      parentType: 'navbar',
+      layoutPosition: 'left',
+      styles: {
+        fontFamily: designSpec.typography.fontFamily,
+        fontSize: designSpec.typography.fontSizes.large,
+        fontWeight: 'bold',
+        textColor: '#FFFFFF'
+      }
+    });
+    
+    // Add content section
+    elements.push({
+      type: 'frame',
+      description: 'Content Container',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'middle',
+      styles: {
+        fillColor: designSpec.colorScheme.background,
+        paddingVertical: designSpec.spacing.large,
+        paddingHorizontal: designSpec.spacing.large
+      }
+    });
+  }
+  
+  // For mobile apps
+  else if (type === 'mobile app') {
+    // Add status bar
+    elements.push({
+      type: 'frame',
+      description: 'Status Bar',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'top',
+      position: {
+        x: 0,
+        y: 0,
+        width: 375,
+        height: 44
+      },
+      styles: {
+        fillColor: designSpec.colorScheme.primary
+      }
+    });
+    
+    // Add app bar
+    elements.push({
+      type: 'navbar',
+      description: 'App Bar',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'top',
+      position: {
+        x: 0,
+        y: 44,
+        width: 375,
+        height: 56
+      },
+      styles: {
+        fillColor: designSpec.colorScheme.primary,
+        textColor: '#FFFFFF'
+      }
+    });
+    
+    // Add a clean title in app bar
+    elements.push({
+      type: 'text',
+      description: 'App Title', // Clean text content
+      displayText: 'App Title', // What will actually display in the Figma design
+      childOf: 'navbar-1',
+      parentType: 'navbar',
+      layoutPosition: 'center',
+      styles: {
+        fontFamily: designSpec.typography.fontFamily,
+        fontSize: designSpec.typography.fontSizes.large,
+        fontWeight: 'bold',
+        textColor: '#FFFFFF'
+      }
+    });
+    
+    // Add content container
+    elements.push({
+      type: 'frame',
+      description: 'Content Container',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'middle',
+      position: {
+        x: 0,
+        y: 100,
+        width: 375,
+        height: 662
+      },
+      styles: {
+        fillColor: designSpec.colorScheme.background
+      }
+    });
+  }
+  
+  // For dashboards
+  else if (type === 'dashboard') {
+    // Add sidebar
+    elements.push({
+      type: 'frame',
+      description: 'Sidebar',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'left',
+      position: {
+        x: 0,
+        y: 0,
+        width: 240,
+        height: 900
+      },
+      styles: {
+        fillColor: designSpec.colorScheme.primary,
+        textColor: '#FFFFFF'
+      }
+    });
+    
+    // Add header
+    elements.push({
+      type: 'navbar',
+      description: 'Header Bar',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'top',
+      position: {
+        x: 240,
+        y: 0,
+        width: 1200,
+        height: 64
+      },
+      styles: {
+        fillColor: '#FFFFFF',
+        borderBottomWidth: 1,
+        borderBottomColor: designSpec.colorScheme.secondary
+      }
+    });
+    
+    // Add content area
+    elements.push({
+      type: 'frame',
+      description: 'Content Area',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'middle',
+      position: {
+        x: 240,
+        y: 64,
+        width: 1200,
+        height: 836
+      },
+      styles: {
+        fillColor: designSpec.colorScheme.secondary,
+        padding: designSpec.spacing.large
+      }
+    });
+  }
+  
+  // Now parse the prompt to extract content elements
+  const parsePromptForContent = (prompt: string): Array<{
+    type: string;
+    description: string;
+    displayText: string;
+    childOf: string;
+    parentType: string;
+    styles: Record<string, any>;
+  }> => {
+    // Create an array to hold content elements from the user's prompt
+    const contentElements: Array<{
+      type: string;
+      description: string;
+      displayText: string;
+      childOf: string;
+      parentType: string;
+      styles: Record<string, any>;
+    }> = [];
+    
+    // Look for headings/titles in the prompt
+    const headingMatches = prompt.match(/(?:title|heading)(?:\s+called|\s+named|\s+saying|\s+that\s+says)?\s+["']([^"']+)["']/gi);
+    if (headingMatches) {
+      headingMatches.forEach(match => {
+        const titleContent = match.match(/["']([^"']+)["']/i);
+        if (titleContent && titleContent[1]) {
+          contentElements.push({
+            type: 'text',
+            description: `Heading: ${titleContent[1]}`,
+            displayText: titleContent[1], // Clean text for display
+            childOf: 'content-container',
+            parentType: 'frame',
+            styles: {
+              fontFamily: designSpec.typography.fontFamily,
+              fontSize: designSpec.typography.fontSizes.xlarge,
+              fontWeight: 'bold',
+              marginBottom: designSpec.spacing.medium
+            }
+          });
+        }
+      });
+    }
+    
+    // Look for paragraphs in the prompt
+    const paragraphMatches = prompt.match(/(?:paragraph|text|body)(?:\s+saying|\s+that\s+says|\s+with\s+content|\s+with\s+text)?\s+["']([^"']+)["']/gi);
+    if (paragraphMatches) {
+      paragraphMatches.forEach(match => {
+        const paragraphContent = match.match(/["']([^"']+)["']/i);
+        if (paragraphContent && paragraphContent[1]) {
+          contentElements.push({
+            type: 'text',
+            description: `Paragraph text`,
+            displayText: paragraphContent[1], // Clean text for display
+            childOf: 'content-container',
+            parentType: 'frame',
+            styles: {
+              fontFamily: designSpec.typography.fontFamily,
+              fontSize: designSpec.typography.fontSizes.normal,
+              marginBottom: designSpec.spacing.medium
+            }
+          });
+        }
+      });
+    }
+    
+    // Look for buttons in the prompt
+    const buttonMatches = prompt.match(/(?:button|cta)(?:\s+labeled|\s+with\s+text|\s+saying)?\s+["']([^"']+)["']/gi);
+    if (buttonMatches) {
+      buttonMatches.forEach(match => {
+        const buttonContent = match.match(/["']([^"']+)["']/i);
+        if (buttonContent && buttonContent[1]) {
+          contentElements.push({
+            type: 'button',
+            description: `Button: ${buttonContent[1]}`,
+            displayText: buttonContent[1], // Clean text for button label
+            childOf: 'content-container',
+            parentType: 'frame',
+            styles: {
+              fillColor: designSpec.colorScheme.primary,
+              textColor: '#FFFFFF',
+              paddingVertical: designSpec.spacing.small,
+              paddingHorizontal: designSpec.spacing.medium,
+              cornerRadius: 4,
+              fontWeight: 'medium'
+            }
+          });
+        }
+      });
+    }
+    
+    // Look for input fields in the prompt
+    const inputMatches = prompt.match(/(?:input|text field|form field)(?:\s+for|\s+labeled|\s+with\s+placeholder)?\s+["']([^"']+)["']/gi);
+    if (inputMatches) {
+      inputMatches.forEach(match => {
+        const inputContent = match.match(/["']([^"']+)["']/i);
+        if (inputContent && inputContent[1]) {
+          contentElements.push({
+            type: 'input',
+            description: `Input field for: ${inputContent[1]}`,
+            displayText: inputContent[1], // Clean text for placeholder
+            childOf: 'content-container',
+            parentType: 'frame',
+            styles: {
+              fillColor: '#FFFFFF',
+              borderWidth: 1,
+              borderColor: designSpec.colorScheme.secondary,
+              cornerRadius: 4,
+              paddingVertical: designSpec.spacing.small,
+              paddingHorizontal: designSpec.spacing.small
+            }
+          });
+        }
+      });
+    }
+    
+    return contentElements;
+  };
+  
+  // Add content elements from the user's prompt
+  const contentElements = parsePromptForContent(prompt);
+  if (contentElements.length > 0) {
+    elements.push(...contentElements);
+  } else {
+    // If no specific content was extracted, add some default elements based on type
+    if (type === 'website' || type === 'landing page') {
+      elements.push({
+        type: 'text',
+        description: 'Main Heading',
+        displayText: 'Welcome to Our Website',
+        childOf: 'content-container',
+        parentType: 'frame',
+        styles: {
+          fontFamily: designSpec.typography.fontFamily,
+          fontSize: designSpec.typography.fontSizes.xxlarge,
+          fontWeight: 'bold',
+          marginBottom: designSpec.spacing.large
+        }
+      });
+    } else if (type === 'mobile app') {
+      elements.push({
+        type: 'text',
+        description: 'Welcome Message',
+        displayText: 'Welcome Back',
+        childOf: 'content-container',
+        parentType: 'frame',
+        styles: {
+          fontFamily: designSpec.typography.fontFamily,
+          fontSize: designSpec.typography.fontSizes.xlarge,
+          fontWeight: 'bold',
+          marginTop: designSpec.spacing.large,
+          marginBottom: designSpec.spacing.medium,
+          textAlign: 'center'
+        }
+      });
+    } else if (type === 'dashboard') {
+      elements.push({
+        type: 'text',
+        description: 'Dashboard Title',
+        displayText: 'Dashboard',
+        childOf: 'navbar-1',
+        parentType: 'navbar',
+        styles: {
+          fontFamily: designSpec.typography.fontFamily,
+          fontSize: designSpec.typography.fontSizes.large,
+          fontWeight: 'medium'
+        }
+      });
+    }
+  }
+  
+  // Check if we need to add a footer (for websites)
+  if ((type === 'website' || type === 'landing page') && 
+      (content.includes('footer') || content.includes('bottom'))) {
+    elements.push({
+      type: 'frame',
+      description: 'Footer',
+      childOf: 'main-container',
+      parentType: 'frame',
+      layoutPosition: 'bottom',
+      styles: {
+        fillColor: designSpec.colorScheme.secondary,
+        paddingVertical: designSpec.spacing.large,
+        paddingHorizontal: designSpec.spacing.large
+      }
+    });
+    
+    elements.push({
+      type: 'text',
+      description: 'Footer Text',
+      displayText: '© 2024 Company Name. All rights reserved.',
+      childOf: 'frame-3', // This assumes the footer is the 4th frame
+      parentType: 'frame',
+      styles: {
+        fontFamily: designSpec.typography.fontFamily,
+        fontSize: designSpec.typography.fontSizes.small,
+        textAlign: 'center',
+        textColor: designSpec.colorScheme.textSecondary
+      }
+    });
+  }
+  
   return elements;
 }
 
@@ -1342,9 +1347,9 @@ async function exportFigmaDesign(
   try {
     logger.info('Exporting Figma design', { 
       nodeId: nodeId || 'current-selection', 
-      format, 
-      scale, 
-      includeBackground 
+        format,
+        scale,
+        includeBackground
     });
     
     // If nodeId is explicitly provided as "current-selection", set it to null
@@ -1485,31 +1490,31 @@ async function runServer() {
     });
     
     server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
-      try {
-        const { name, arguments: args } = request.params;
+  try {
+    const { name, arguments: args } = request.params;
         const mcpRequestId = request.id; // Capture the MCP request ID
         logger.info('Handling tool call request', { toolName: name, mcpRequestId });
-        
-        if (!args) {
+
+    if (!args) {
           logger.warn('No arguments provided for tool call', { toolName: name });
-          throw new Error("No arguments provided");
-        }
+      throw new Error("No arguments provided");
+    }
 
         // Create a command ID for Figma plugin that we can track
         const pluginCommandId = `mcp_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
         
         // Get the plugin bridge instance to track MCP request IDs
         const pluginBridge = getPluginBridge();
-        
-        switch (name) {
-          case "create_figma_frame": {
-            if (!isCreateFrameArgs(args)) {
+
+    switch (name) {
+      case "create_figma_frame": {
+        if (!isCreateFrameArgs(args)) {
               logger.warn('Invalid arguments for create_figma_frame', { args });
-              throw new Error("Invalid arguments for create_figma_frame");
-            }
-            const { name, width = 1920, height = 1080, background = "#FFFFFF" } = args;
-            
-            try {
+          throw new Error("Invalid arguments for create_figma_frame");
+        }
+        const { name, width = 1920, height = 1080, background = "#FFFFFF" } = args;
+        
+        try {
               // Store the MCP request ID before making the plugin command call
               pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
               
@@ -1531,15 +1536,15 @@ async function runServer() {
               // and transform it to JSON-RPC format
               if (!useRealMode) {
                 // In mock mode, we need to handle it ourselves
-                const frameId = await createFigmaFrame(name, width, height, background);
+          const frameId = await createFigmaFrame(name, width, height, background);
                 logger.info('create_figma_frame tool completed successfully', { frameId });
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Successfully created frame "${name}" (${width}x${height}) with ID: ${frameId}` 
-                  }],
-                  isError: false,
-                };
+        return {
+            content: [{ 
+              type: "text", 
+              text: `Successfully created frame "${name}" (${width}x${height}) with ID: ${frameId}` 
+            }],
+          isError: false,
+        };
               } else {
                 // In real mode, we send the command but don't wait for the response here
                 // The plugin bridge will handle the response and send it to the MCP server
@@ -1557,24 +1562,24 @@ async function runServer() {
                   _isPlaceholder: true
                 };
               }
-            } catch (error) {
-              return {
-                content: [{ 
-                  type: "text", 
-                  text: `Error creating frame: ${error instanceof Error ? error.message : String(error)}` 
-                }],
-                isError: true,
-              };
-            }
-          }
+        } catch (error) {
+        return {
+            content: [{ 
+              type: "text", 
+              text: `Error creating frame: ${error instanceof Error ? error.message : String(error)}` 
+            }],
+            isError: true,
+          };
+        }
+      }
 
-          case "create_figma_component": {
-            if (!isCreateComponentArgs(args)) {
-              throw new Error("Invalid arguments for create_figma_component");
-            }
-            const { type, description, style = "modern", parentNodeId } = args;
-            
-            try {
+      case "create_figma_component": {
+        if (!isCreateComponentArgs(args)) {
+          throw new Error("Invalid arguments for create_figma_component");
+        }
+        const { type, description, style = "modern", parentNodeId } = args;
+        
+        try {
               // Store the MCP request ID before making the plugin command call
               pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
               
@@ -1595,14 +1600,14 @@ async function runServer() {
               };
               
               if (!useRealMode) {
-                const componentId = await createFigmaComponent(type, description, style, parentNodeId);
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Successfully created ${type} component with ID: ${componentId}` 
-                  }],
-                  isError: false,
-                };
+          const componentId = await createFigmaComponent(type, description, style, parentNodeId);
+        return {
+            content: [{ 
+              type: "text", 
+              text: `Successfully created ${type} component with ID: ${componentId}` 
+            }],
+          isError: false,
+        };
               } else {
                 // In real mode, send the command but don't wait for response here
                 sendPluginCommand(command).catch(error => {
@@ -1618,24 +1623,24 @@ async function runServer() {
                   _isPlaceholder: true
                 };
               }
-            } catch (error) {
-              return {
-                content: [{ 
-                  type: "text", 
-                  text: `Error creating component: ${error instanceof Error ? error.message : String(error)}` 
-                }],
-                isError: true,
-              };
-            }
-          }
+        } catch (error) {
+        return {
+            content: [{ 
+              type: "text", 
+              text: `Error creating component: ${error instanceof Error ? error.message : String(error)}` 
+            }],
+            isError: true,
+          };
+        }
+      }
 
-          case "style_figma_node": {
-            if (!isStyleNodeArgs(args)) {
-              throw new Error("Invalid arguments for style_figma_node");
-            }
-            const { nodeId, styleDescription, fillColor, strokeColor, textProperties } = args;
-            
-            try {
+      case "style_figma_node": {
+        if (!isStyleNodeArgs(args)) {
+          throw new Error("Invalid arguments for style_figma_node");
+        }
+        const { nodeId, styleDescription, fillColor, strokeColor, textProperties } = args;
+        
+        try {
               // Store the MCP request ID before making the plugin command call
               pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
               
@@ -1655,14 +1660,14 @@ async function runServer() {
               };
               
               if (!useRealMode) {
-                const styledNodeId = await styleFigmaNode(styleDescription, nodeId, fillColor, strokeColor, textProperties);
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Successfully styled node with ID: ${styledNodeId}` 
-                  }],
-                  isError: false,
-                };
+          const styledNodeId = await styleFigmaNode(styleDescription, nodeId, fillColor, strokeColor, textProperties);
+        return {
+            content: [{ 
+              type: "text", 
+              text: `Successfully styled node with ID: ${styledNodeId}` 
+            }],
+          isError: false,
+        };
               } else {
                 // In real mode, send the command but don't wait for response here
                 sendPluginCommand(command).catch(error => {
@@ -1678,24 +1683,24 @@ async function runServer() {
                   _isPlaceholder: true
                 };
               }
-            } catch (error) {
-              return {
-                content: [{ 
-                  type: "text", 
-                  text: `Error styling node: ${error instanceof Error ? error.message : String(error)}` 
-                }],
-                isError: true,
-              };
-            }
-          }
+        } catch (error) {
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Error styling node: ${error instanceof Error ? error.message : String(error)}` 
+            }],
+            isError: true,
+          };
+        }
+      }
 
-          case "generate_figma_design": {
-            if (!isGenerateDesignArgs(args)) {
-              throw new Error("Invalid arguments for generate_figma_design");
-            }
-            const { prompt, type, style = "modern" } = args;
-            
-            try {
+      case "generate_figma_design": {
+        if (!isGenerateDesignArgs(args)) {
+          throw new Error("Invalid arguments for generate_figma_design");
+        }
+        const { prompt, type, style = "modern" } = args;
+        
+        try {
               // Store the MCP request ID before making the plugin command call
               pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
               
@@ -1719,14 +1724,14 @@ async function runServer() {
               };
               
               if (!useRealMode) {
-                const designId = await generateFigmaDesign(prompt, type, style);
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Successfully generated ${type} design based on prompt with root frame ID: ${designId}` 
-                  }],
-                  isError: false,
-                };
+          const designId = await generateFigmaDesign(prompt, type, style);
+        return {
+            content: [{ 
+              type: "text", 
+              text: `Successfully generated ${type} design based on prompt with root frame ID: ${designId}` 
+            }],
+          isError: false,
+        };
               } else {
                 // In real mode, send the wireframe command first
                 const wireframeResponse = await sendPluginCommand<PluginResponse>(wireframeCommand);
@@ -1843,24 +1848,24 @@ async function runServer() {
                   };
                 }
               }
-            } catch (error) {
-              return {
-                content: [{ 
-                  type: "text", 
-                  text: `Error generating design: ${error instanceof Error ? error.message : String(error)}` 
-                }],
-                isError: true,
-              };
-            }
-          }
+        } catch (error) {
+        return {
+            content: [{ 
+              type: "text", 
+              text: `Error generating design: ${error instanceof Error ? error.message : String(error)}` 
+            }],
+            isError: true,
+          };
+        }
+      }
 
-          case "export_figma_design": {
-            if (!isExportDesignArgs(args)) {
-              throw new Error("Invalid arguments for export_figma_design");
-            }
-            const { nodeId, format = "png", scale = 1, includeBackground = true } = args;
-            
-            try {
+      case "export_figma_design": {
+        if (!isExportDesignArgs(args)) {
+          throw new Error("Invalid arguments for export_figma_design");
+        }
+        const { nodeId, format = "png", scale = 1, includeBackground = true } = args;
+        
+        try {
               // Store the MCP request ID before making the plugin command call
               pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
               
@@ -1882,14 +1887,14 @@ async function runServer() {
               };
               
               if (!useRealMode) {
-                const exportUrl = await exportFigmaDesign(nodeId, format, scale, includeBackground);
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Successfully exported design: ${exportUrl}` 
-                  }],
-                  isError: false,
-                };
+          const exportUrl = await exportFigmaDesign(nodeId, format, scale, includeBackground);
+        return {
+            content: [{ 
+              type: "text", 
+              text: `Successfully exported design: ${exportUrl}` 
+            }],
+          isError: false,
+        };
               } else {
                 // In real mode, send the command but don't wait for response here
                 sendPluginCommand(command).catch(error => {
@@ -1905,103 +1910,103 @@ async function runServer() {
                   _isPlaceholder: true
                 };
               }
-            } catch (error) {
-              return {
-                content: [{ 
-                  type: "text", 
-                  text: `Error exporting design: ${error instanceof Error ? error.message : String(error)}` 
-                }],
-                isError: true,
-              };
-            }
-          }
-
-          default:
-            logger.warn('Unknown tool requested', { toolName: name });
-            return {
-              content: [{ type: "text", text: `Unknown tool: ${name}` }],
-              isError: true,
-            };
+        } catch (error) {
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Error exporting design: ${error instanceof Error ? error.message : String(error)}` 
+            }],
+            isError: true,
+          };
         }
-      } catch (error) {
-        logger.error('Error handling tool call', error as Error);
+      }
+
+      default:
+            logger.warn('Unknown tool requested', { toolName: name });
         return {
-          content: [
-            {
-              type: "text",
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
+          content: [{ type: "text", text: `Unknown tool: ${name}` }],
           isError: true,
         };
-      }
-    });
-    
+    }
+  } catch (error) {
+        logger.error('Error handling tool call', error as Error);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+});
+
     // Register prompts
     server.setRequestHandler(ListPromptsRequestSchema, async () => {
       return {
-        prompts: PROMPTS
+  prompts: PROMPTS
       };
     });
-    
+
     server.setRequestHandler(GetPromptRequestSchema, async (request: any) => {
-      const { name, arguments: args } = request.params;
+  const { name, arguments: args } = request.params;
       logger.info('Handling GetPrompt request', { promptName: name });
-      
+  
       try {
-        switch (name) {
-          case "create-website-design": {
-            const description = args?.description || "";
-            const style = args?.style || "modern";
-            
-            return {
-              messages: [
-                {
-                  role: "user",
-                  content: {
-                    type: "text",
-                    text: `Create a website design with the following details:\n\nDescription: ${description}\nStyle: ${style}\n\nPlease generate a clean, professional design that includes navigation, hero section, content blocks, and footer.`
-                  }
-                }
-              ]
-            };
+  switch (name) {
+    case "create-website-design": {
+      const description = args?.description || "";
+      const style = args?.style || "modern";
+      
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `Create a website design with the following details:\n\nDescription: ${description}\nStyle: ${style}\n\nPlease generate a clean, professional design that includes navigation, hero section, content blocks, and footer.`
+            }
           }
-          
-          case "create-mobile-app": {
-            const purpose = args?.purpose || "";
-            const screens = args?.screens || "login, home, profile, settings";
-            
-            return {
-              messages: [
-                {
-                  role: "user",
-                  content: {
-                    type: "text",
-                    text: `Design a mobile app with the following purpose: ${purpose}\n\nPlease create these screens: ${screens}\n\nEnsure the design is mobile-friendly with appropriate UI elements and navigation patterns.`
-                  }
-                }
-              ]
-            };
+        ]
+      };
+    }
+    
+    case "create-mobile-app": {
+      const purpose = args?.purpose || "";
+      const screens = args?.screens || "login, home, profile, settings";
+      
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `Design a mobile app with the following purpose: ${purpose}\n\nPlease create these screens: ${screens}\n\nEnsure the design is mobile-friendly with appropriate UI elements and navigation patterns.`
+            }
           }
-          
-          case "design-component-system": {
-            const brandName = args?.brandName || "";
-            const primaryColor = args?.primaryColor || "#4285F4";
-            
-            return {
-              messages: [
-                {
-                  role: "user",
-                  content: {
-                    type: "text",
-                    text: `Create a design system for ${brandName} with primary color ${primaryColor}.\n\nPlease include:\n- Color palette (primary, secondary, neutrals)\n- Typography scale\n- Button states\n- Form elements\n- Cards and containers`
-                  }
-                }
-              ]
-            };
+        ]
+      };
+    }
+    
+    case "design-component-system": {
+      const brandName = args?.brandName || "";
+      const primaryColor = args?.primaryColor || "#4285F4";
+      
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `Create a design system for ${brandName} with primary color ${primaryColor}.\n\nPlease include:\n- Color palette (primary, secondary, neutrals)\n- Typography scale\n- Button states\n- Form elements\n- Cards and containers`
+            }
           }
-          
-          default:
+        ]
+      };
+    }
+    
+    default:
             const errorMsg = `Prompt not found: ${name}`;
             logger.warn('Prompt not found', { promptName: name });
             throw new Error(errorMsg);

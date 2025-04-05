@@ -168,8 +168,8 @@ To connect with the Figma plugin:
 4. The connection status will be shown in the plugin UI
 ==============================================================
         `);
-        
-        return Promise.resolve();
+      
+      return Promise.resolve();
       }
     } catch (error) {
       logger.error('Failed to initialize plugin bridge', error as Error);
@@ -257,23 +257,23 @@ To connect with the Figma plugin:
     
     if (this.isMockMode) {
       // Mock mode implementation
-      return new Promise((resolve) => {
+    return new Promise((resolve) => {
         logger.log(`Mock plugin received command: ${command.type}`, { commandId: command.id });
-        
-        // Simulate a successful response with mock data
-        const mockResponse: any = this.createMockResponse(command);
+      
+      // Simulate a successful response with mock data
+      const mockResponse: any = this.createMockResponse(command);
         
         // Add the command ID to the response
         mockResponse.id = command.id;
         
         // Update session context from the response
         this.updateSessionFromResponse(mockResponse);
-        
-        // Resolve with mock data
-        setTimeout(() => {
-          resolve(mockResponse as T);
-        }, 300); // Add a small delay to simulate processing
-      });
+      
+      // Resolve with mock data
+      setTimeout(() => {
+        resolve(mockResponse as T);
+      }, 300); // Add a small delay to simulate processing
+    });
     } else {
       // Real mode implementation with WebSockets
       return new Promise((resolve, reject) => {
@@ -469,9 +469,9 @@ To connect with the Figma plugin:
       case 'GET_SELECTION':
         response.data = {
           selection: [{
-            id: 'mock-selection-' + Date.now(),
-            name: 'Mock Selected Element',
-            type: 'FRAME'
+          id: 'mock-selection-' + Date.now(),
+          name: 'Mock Selected Element',
+          type: 'FRAME'
           }],
           currentPage: {
             id: mockPageId,
@@ -484,8 +484,8 @@ To connect with the Figma plugin:
         response.data = {
           currentPage: {
             id: mockPageId,
-            name: 'Mock Current Page',
-            childrenCount: 5
+          name: 'Mock Current Page',
+          childrenCount: 5
           },
           activePage: {
             id: mockPageId,
@@ -599,33 +599,132 @@ To connect with the Figma plugin:
     if (response.success) {
       // Format successful response
       let successMessage = `Successfully completed ${response.type.toLowerCase().replace('_', ' ')}`;
+      let additionalContent: any[] = [];
       
       // Add more specific details based on command type
       switch (response.type) {
         case 'CREATE_WIREFRAME':
           successMessage = `Successfully created wireframe with ID: ${response.data?.wireframeId || 'unknown'}`;
+          
+          // Include page information if available
+          if (response.data?.pageIds) {
+            successMessage += ` containing ${response.data.pageIds.length} page(s)`;
+          }
+          
+          // Add detailed wireframe properties if available
+          if (response.data && Object.keys(response.data).length > 0) {
+            additionalContent.push({
+              type: "text",
+              text: "\nWireframe properties:"
+            });
+            
+            const propertiesText = JSON.stringify(response.data, null, 2);
+            additionalContent.push({
+              type: "code",
+              text: propertiesText,
+              language: "json"
+            });
+          }
           break;
+          
         case 'ADD_ELEMENT':
           successMessage = `Successfully created ${response.data?.type || 'component'} with ID: ${response.data?.id || 'unknown'}`;
+          
+          // Include detailed node properties in the response for better feedback
+          if (response.data && Object.keys(response.data).length > 0) {
+            additionalContent.push({
+              type: "text",
+              text: "\nElement properties:"
+            });
+            
+            const propertiesText = JSON.stringify(response.data, null, 2);
+            additionalContent.push({
+              type: "code",
+              text: propertiesText,
+              language: "json"
+            });
+          }
           break;
+          
         case 'STYLE_ELEMENT':
           successMessage = `Successfully styled element with ID: ${response.data?.id || 'unknown'}`;
+          
+          // Include details about the applied styles
+          if (response.data && Object.keys(response.data).length > 0) {
+            additionalContent.push({
+              type: "text",
+              text: "\nStyled element properties:"
+            });
+            
+            const propertiesText = JSON.stringify(response.data, null, 2);
+            additionalContent.push({
+              type: "code",
+              text: propertiesText,
+              language: "json"
+            });
+          }
           break;
+          
         case 'EXPORT_DESIGN':
           successMessage = `Successfully exported design${response.data?.files ? ` (${response.data.files.length} files)` : ''}`;
+          
+          // Include export details
+          if (response.data?.files && response.data.files.length > 0) {
+            additionalContent.push({
+              type: "text",
+              text: "\nExported files:"
+            });
+            
+            const filesInfo = response.data.files.map((file: any) => ({
+              name: file.name,
+              format: file.format,
+              size: file.data ? `${Math.floor(file.data.length / 1024)} KB` : 'unknown'
+            }));
+            
+            const filesText = JSON.stringify(filesInfo, null, 2);
+            additionalContent.push({
+              type: "code",
+              text: filesText,
+              language: "json"
+            });
+          }
+          break;
+          
+        case 'GET_SELECTION':
+        case 'GET_CURRENT_PAGE':
+          // Just include the raw data as it's already well-structured
+          successMessage = `Retrieved ${response.type === 'GET_SELECTION' ? 'selection' : 'current page'} information`;
+          
+          if (response.data && Object.keys(response.data).length > 0) {
+            additionalContent.push({
+              type: "text",
+              text: `\n${response.type === 'GET_SELECTION' ? 'Selection' : 'Page'} details:`
+            });
+            
+            const dataText = JSON.stringify(response.data, null, 2);
+            additionalContent.push({
+              type: "code",
+              text: dataText,
+              language: "json"
+            });
+          }
           break;
       }
+      
+      // Create the result content array with the main message and additional details
+      const content = [
+        {
+          type: "text",
+          text: successMessage
+        },
+        ...additionalContent
+      ];
       
       return {
         jsonrpc: "2.0",
         id: mcpRequestId,
         result: {
-          content: [
-            {
-              type: "text",
-              text: successMessage
-            }
-          ],
+          content,
           isError: false
         }
       };
