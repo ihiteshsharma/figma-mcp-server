@@ -10,8 +10,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc && node dist/index.js",
+    "dev": "npx tsc && node dist/index.js",
     "inspector": "npx -y @modelcontextprotocol/inspector@latest --server \"npm run dev\"",
+    "build:figma-plugin": "npx tsc --skipLibCheck -p figma-plugin/tsconfig.json",
     "server": "npm run build && node dist/index.js"
   },
   "keywords": [

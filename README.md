@@ -1,128 +1,156 @@
 # Figma MCP Server
 
-An MCP (Model Context Protocol) server that allows AI assistants like Claude to create and manipulate Figma designs based on text prompts. This implementation uses a direct connection to a Figma plugin to provide real-time design capabilities.
+A tool that lets Claude create and edit designs directly in Figma.
 
-## Features
+## What This Does
 
-- Create frames with specified dimensions
-- Generate UI components based on descriptions
-- Apply styling to existing design elements
-- Generate complete designs from text prompts
-- Export designs as images
+This tool connects Claude with Figma, allowing you to:
 
-## Architecture
+- Create new Figma designs by describing them to Claude
+- Edit existing Figma designs with simple instructions
+- Generate complete wireframes and UI elements
+- Export your designs
 
-This MCP server uses a plugin-based approach with three main components:
+## How It Works
 
-1. **MCP Server**: Handles communication with Claude and other MCP-compatible assistants
-2. **Plugin Bridge**: Manages communication between the MCP server and the Figma plugin
-3. **Figma Plugin**: Performs the actual design operations within Figma
+1. **Claude**: Understands your design requests
+2. **Figma Plugin**: Creates the designs in Figma
+3. **Server**: Connects Claude to Figma (runs automatically)
 
-This approach provides several advantages:
-- Real-time design changes directly in the Figma UI
-- Full access to Figma's plugin API capabilities
-- Visual feedback as designs are created
+## Quick Start Guide
 
-## Installation
+### For Users
 
-### Prerequisites
-
-- Node.js 16 or higher
-- Figma desktop application
-- Figma plugin CLI (install with `npm install -g @figma/plugin-cli`)
-
-### Setup
-
-1. Clone this repository
-2. Install dependencies:
-
-```bash
-npm install
-```
-
-3. Install the Figma plugin:
-   - Open Figma
+1. **Install the Figma Plugin**:
+   - Open Figma Desktop app
    - Go to Plugins > Development > Import plugin from manifest
-   - Select the `figma-plugin/manifest.json` file from this repo
+   - Select the `figma-plugin/manifest.json` file from this project
 
-## Usage
+2. **Use with Claude**:
+   - Open Claude
+   - The Figma tool should appear in Claude's tools menu
+   - Ask Claude to create designs in Figma, like:
+     - "Create a login screen in Figma"
+     - "Design a blue button with rounded corners in Figma"
+     - "Make a simple landing page layout in Figma"
 
-### Running the server
+### For Technical Setup (IT/Developers)
 
-1. Start Figma and open a file where you want to create designs
-2. Run the Figma plugin from the Plugins menu
-3. Start the MCP server:
+<details>
+<summary>Click to expand technical setup instructions</summary>
 
-```bash
-npm start
-```
+#### Prerequisites
 
-### Connecting to Claude Desktop
+- Node.js (>= 16)
+- npm
+- Docker (installed on the machine running Claude)
+- Figma Desktop app
 
-1. In Claude Desktop, go to Preferences
-2. Navigate to the Plugins section
-3. Add a new plugin with the following configuration:
-   - Name: Figma MCP
-   - Command: `/path/to/node /path/to/index.js`
-   - Make sure to use absolute paths
+#### Installation
 
-### Available Tools
+1. **Clone and Install**:
+   ```
+   git clone <repository-url>
+   cd figma-mcp-server
+   npm install
+   ```
 
-The server provides the following tools:
+2. **Build**:
+   ```
+   npm run build
+   npm run build:figma-plugin
+   ```
 
-1. **create_figma_frame**: Creates a new frame with specified dimensions
-2. **create_figma_component**: Creates UI components from text descriptions
-3. **style_figma_node**: Applies styling to existing nodes
-4. **generate_figma_design**: Creates complete designs from text prompts
-5. **export_figma_design**: Exports designs as images
+3. **Build Docker Image & Figma Plugin**:
+   ```
+   docker build -t mcp/hs-figma .
+   
+   npm run build:figma-plugin
+   ```
 
-### Prompt Templates
+4. **Configure Claude**:
+   Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+   ```json
+   {
+     "mcpServers": {
+       "figma": {
+         "command": "docker",
+         "args": [
+           "run",
+           "-i",
+           "-p",
+           "9000:9000",
+           "-e",
+           "WEBSOCKET_MODE=true",
+           "-e",
+           "FIGMA_MODE=true",
+           "--rm",
+           "mcp/hs-figma"
+         ],
+         "env": {
+           "NODE_ENV": "production",
+           "WEBSOCKET_MODE": "true",
+           "WS_PORT": "9000"
+         }
+       }
+     }
+   }
+   ```
+   
+   Once this configuration is added, Claude will automatically start the server when needed.
+</details>
 
-The server includes several preset prompt templates:
+## Design Capabilities
 
-1. **create-website-design**: Creates a complete website design based on a description
-2. **create-mobile-app**: Creates a mobile app interface with multiple screens
-3. **design-component-system**: Creates a design system with consistent components
+You can ask Claude to:
 
-### Example Prompts
-
-Try asking Claude:
-
-- "Create a new frame for a mobile app home screen"
-- "Generate a modern login form component with username and password fields"
-- "Design a minimal dashboard layout for a financial app"
-- "Export my current selection as a PNG image"
-
-## Development
-
-### Project Structure
-
-```
-/
-├── index.ts              # Main MCP server
-├── plugin-bridge.ts      # Communication with Figma plugin
-├── figma-plugin/         # Figma plugin files
-│   ├── manifest.json     # Plugin manifest
-│   ├── code.ts           # Plugin code
-│   └── ui.html           # Plugin UI
-├── package.json          # Project configuration
-└── README.md             # Documentation
-```
-
-### How It Works
-
-1. The MCP server receives requests from Claude
-2. These requests are translated to Figma plugin commands
-3. The plugin bridge sends commands to the Figma plugin
-4. The Figma plugin executes the commands in the Figma UI
-5. Results are sent back through the plugin bridge to the MCP server
-6. The MCP server returns the results to Claude
+- Create rectangles, circles, text, and frames
+- Design buttons, cards, and other UI components
+- Arrange layouts for web pages and apps
+- Style elements with colors, shadows, and effects
+- Export designs as images
 
 ## Troubleshooting
 
-- Make sure the Figma plugin is running before starting the MCP server
-- Check that Figma has a document open for the plugin to work with
-- If communication fails, try restarting both the plugin and the server
+### Common Issues
+
+1. **Claude can't connect to Figma**
+   - Make sure the Figma plugin is running
+   - Make sure you've correctly set up the Claude configuration file
+   - Restart Claude and try again
+
+2. **Shapes don't appear as expected**
+   - Try being more specific in your instructions to Claude
+   - For colors, use common names like "blue" or hex codes like "#0000FF"
+
+3. **Plugin not working**
+   - Make sure you've opened a Figma file
+   - Reinstall the plugin if needed
+
+For technical troubleshooting, see the "Technical Issues" section below.
+
+<details>
+<summary>Technical Issues</summary>
+
+1. **WebSocket Connection Failure**
+   - Check that port 9000 is not blocked by firewalls
+   - Verify WS_PORT setting in both server and plugin configurations
+
+2. **Plugin Loading Issues**
+   - Ensure TypeScript files are compiled correctly
+   - Check console errors in Figma's developer tools
+
+3. **Color Format Issues**
+   - Color objects should use opacity instead of alpha ('a') property
+</details>
+
+## Examples
+
+Try asking Claude:
+
+- "Create a simple app homepage in Figma with a header, hero section, and footer"
+- "Design a user profile card with an avatar, name, and bio in Figma"
+- "Make a set of navigation buttons in Figma"
 
 ## License
 
