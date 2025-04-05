@@ -26,6 +26,31 @@ This tool connects Claude with Figma, allowing you to:
    - Go to Plugins > Development > Import plugin from manifest
    - Select the `figma-plugin/manifest.json` file from this project
 
+2. **Configure Figma MCP Server in Claude config**:
+   - Check where MCP Config json is located on your system. This may depend on your operating system.
+   - Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+   ```json
+   {
+     "mcpServers": {
+         "figma": {
+         "command": "docker",
+            "args": [
+               "run",
+               "-i",
+               "-p",
+               "9000:9000",
+               "--rm",
+               "mcp/hs-figma"
+            ],
+            "env": {
+               "NODE_ENV": "production",
+               "WEBSOCKET_MODE": "true",
+               "WS_PORT": "9000"
+            }
+         }
+     }
+   }
+
 2. **Use with Claude**:
    - Open Claude
    - The Figma tool should appear in Claude's tools menu
