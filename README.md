@@ -73,26 +73,22 @@ This tool connects Claude with Figma, allowing you to:
    ```json
    {
      "mcpServers": {
-       "figma": {
+         "figma": {
          "command": "docker",
-         "args": [
-           "run",
-           "-i",
-           "-p",
-           "9000:9000",
-           "-e",
-           "WEBSOCKET_MODE=true",
-           "-e",
-           "FIGMA_MODE=true",
-           "--rm",
-           "mcp/hs-figma"
-         ],
-         "env": {
-           "NODE_ENV": "production",
-           "WEBSOCKET_MODE": "true",
-           "WS_PORT": "9000"
+            "args": [
+               "run",
+               "-i",
+               "-p",
+               "9000:9000",
+               "--rm",
+               "mcp/hs-figma"
+            ],
+            "env": {
+               "NODE_ENV": "production",
+               "WEBSOCKET_MODE": "true",
+               "WS_PORT": "9000"
+            }
          }
-       }
      }
    }
    ```
