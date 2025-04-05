@@ -16,7 +16,19 @@ type CommandType =
   | 'ARRANGE_LAYOUT'
   | 'EXPORT_DESIGN'
   | 'GET_SELECTION'
-  | 'GET_CURRENT_PAGE';
+  | 'GET_CURRENT_PAGE'
+  // Direct Figma API commands
+  | 'CREATE_RECTANGLE'
+  | 'CREATE_ELLIPSE'
+  | 'CREATE_POLYGON'
+  | 'CREATE_STAR'
+  | 'CREATE_VECTOR'
+  | 'CREATE_TEXT'
+  | 'CREATE_FRAME'
+  | 'CREATE_COMPONENT'
+  | 'CREATE_INSTANCE'
+  | 'CREATE_LINE'
+  | 'CREATE_GROUP';
 
 // Message structure for communication
 interface PluginMessage {
@@ -231,68 +243,96 @@ function createDetailedNodeResponse(node: SceneNode): any {
   return details;
 }
 
-// Handle messages from the MCP server
-figma.ui.onmessage = async (message: PluginMessage | { type: string, _isResponse?: boolean }) => {
-  console.log('Raw message received from UI:', message);
-  
-  // Skip if this is a response message (our own message echoed back)
-  if (message._isResponse) {
-    console.log('Ignoring echo of our own response message');
-    return;
-  }
-  
-  // Handle UI_READY message
-  if (message.type === 'UI_READY') {
-    console.log('UI is ready to receive messages');
-    return;
-  }
-  
-  // Continue with existing message handling for PluginMessage types
-  const pluginMessage = message as PluginMessage;
-  console.log('Plugin message:', pluginMessage);
-  
-  // Ensure payload exists - if not, create an empty object to prevent undefined errors
-  if (!pluginMessage.payload) {
-    console.error('Missing payload in message:', pluginMessage);
-    pluginMessage.payload = {}; // Create empty payload to avoid null reference errors
-  }
+// Main message handler with support for direct API commands
+figma.ui.onmessage = async (msg: PluginMessage) => {
+  console.log('Message received in plugin:', msg);
   
   try {
-    switch (pluginMessage.type) {
+    switch (msg.type) {
+      // Existing command handlers
       case 'CREATE_WIREFRAME':
-        await handleCreateWireframe(pluginMessage);
+        await handleCreateWireframe(msg);
         break;
+        
       case 'ADD_ELEMENT':
-        await handleAddElement(pluginMessage);
+        const addElementResult = await handleAddElement(msg);
+        sendResponse({
+          type: msg.type,
+          success: addElementResult.success,
+          error: addElementResult.error,
+          data: addElementResult.data,
+          id: msg.id,
+          _isResponse: true
+        });
         break;
+        
       case 'STYLE_ELEMENT':
-        await handleStyleElement(pluginMessage);
+        await handleStyleElement(msg);
         break;
+        
       case 'MODIFY_ELEMENT':
-        await handleModifyElement(pluginMessage);
+        await handleModifyElement(msg);
         break;
+        
       case 'ARRANGE_LAYOUT':
-        await handleArrangeLayout(pluginMessage);
+        await handleArrangeLayout(msg);
         break;
+        
       case 'EXPORT_DESIGN':
-        await handleExportDesign(pluginMessage);
+        await handleExportDesign(msg);
         break;
+        
       case 'GET_SELECTION':
-        handleGetSelection(pluginMessage);
+        handleGetSelection(msg);
         break;
+        
       case 'GET_CURRENT_PAGE':
-        handleGetCurrentPage(pluginMessage);
+        handleGetCurrentPage(msg);
         break;
+        
+      // New direct API commands
+      case 'CREATE_RECTANGLE':
+        await handleCreateRectangle(msg);
+        break;
+        
+      case 'CREATE_ELLIPSE':
+        await handleCreateEllipse(msg);
+        break;
+        
+      case 'CREATE_TEXT':
+        await handleCreateText(msg);
+        break;
+        
+      case 'CREATE_FRAME':
+        await handleCreateFrame(msg);
+        break;
+        
+      case 'CREATE_COMPONENT':
+        await handleCreateComponent(msg);
+        break;
+        
+      case 'CREATE_LINE':
+        await handleCreateLine(msg);
+        break;
+        
       default:
-        throw new Error(`Unknown command type: ${pluginMessage.type}`);
+        console.warn(`Unknown command type: ${msg.type}`);
+        sendResponse({
+          type: msg.type,
+          success: false,
+          error: `Unknown command type: ${msg.type}`,
+          id: msg.id,
+          _isResponse: true
+        });
     }
   } catch (error) {
-    console.error('Error handling message:', error);
+    console.error(`Error handling message: ${error}`);
     sendResponse({
-      type: pluginMessage.type,
+      type: msg.type,
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      id: pluginMessage.id
+      error: error instanceof Error ? error.message : String(error),
+      id: msg.id,
+      _isResponse: true
     });
   }
 };
@@ -1162,23 +1202,23 @@ async function handleAddElement(msg: { type: string, payload: any }): Promise<Ha
         case 'top':
           x = (parentWidth - (position.width || 100)) / 2;
           y = 0;
-          break;
+      break;
         case 'bottom':
           x = (parentWidth - (position.width || 100)) / 2;
           y = parentHeight - (position.height || 50);
-          break;
+      break;
         case 'left':
           x = 0;
           y = (parentHeight - (position.height || 100)) / 2;
-          break;
+      break;
         case 'right':
           x = parentWidth - (position.width || 50);
           y = (parentHeight - (position.height || 100)) / 2;
-          break;
+      break;
         case 'center':
           x = (parentWidth - (position.width || 100)) / 2;
           y = (parentHeight - (position.height || 100)) / 2;
-          break;
+      break;
       }
     }
     
@@ -1197,7 +1237,7 @@ async function handleAddElement(msg: { type: string, payload: any }): Promise<Ha
     switch (nodeType) {
       case 'TEXT': {
         // Create a text node
-        const text = figma.createText();
+  const text = figma.createText();
         
         // Set text content
         // Try to use displayText first, then fallback to other properties
@@ -1234,7 +1274,7 @@ async function handleAddElement(msg: { type: string, payload: any }): Promise<Ha
       case 'BUTTON': {
         // Create a rectangle for the button
         const button = figma.createRectangle();
-        button.name = properties.name || 'Button';
+  button.name = properties.name || 'Button';
         
         // Add to parent
         if (parentFrame) {
@@ -1242,12 +1282,12 @@ async function handleAddElement(msg: { type: string, payload: any }): Promise<Ha
         } else {
           parentPage.appendChild(button);
         }
-        
-        // Set button size
+  
+  // Set button size
         const width = enrichedStyles.width || 120;
         const height = enrichedStyles.height || 40;
-        button.resize(width, height);
-        
+  button.resize(width, height);
+  
         // Position button
         button.x = x;
         button.y = y;
@@ -1255,9 +1295,9 @@ async function handleAddElement(msg: { type: string, payload: any }): Promise<Ha
         // Basic styling
         button.fills = [{ type: 'SOLID', color: { r: 0.12, g: 0.47, b: 0.71 } }];
         button.cornerRadius = 4;
-        
-        // Create button text
-        const text = figma.createText();
+  
+  // Create button text
+  const text = figma.createText();
         
         // Load font before setting characters
         try {
@@ -1298,7 +1338,7 @@ async function handleAddElement(msg: { type: string, payload: any }): Promise<Ha
       case 'INPUT': {
         // Create a rectangle for the input
         const input = figma.createRectangle();
-        input.name = properties.name || 'Input Field';
+  input.name = properties.name || 'Input Field';
         
         // Add to parent
         if (parentFrame) {
@@ -1307,10 +1347,10 @@ async function handleAddElement(msg: { type: string, payload: any }): Promise<Ha
           parentPage.appendChild(input);
         }
   
-        // Set input size
+  // Set input size
         const width = enrichedStyles.width || 240;
         const height = enrichedStyles.height || 40;
-        input.resize(width, height);
+  input.resize(width, height);
   
         // Basic styling
         input.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }];
@@ -1318,8 +1358,8 @@ async function handleAddElement(msg: { type: string, payload: any }): Promise<Ha
         input.strokeWeight = 1;
         input.cornerRadius = 4;
   
-        // Create placeholder text
-        const text = figma.createText();
+  // Create placeholder text
+  const text = figma.createText();
         
         // Load font before setting characters
         try {
@@ -2610,4 +2650,661 @@ function getNodeDetails(node: SceneNode): Record<string, any> {
   }
   
   return baseDetails;
+}
+
+/**
+ * Utility function to clean fills/strokes by removing 'a' property from color objects
+ * since Figma's API doesn't support it directly in the color object
+ */
+function cleanPaintStyles(styles: any[]): any[] {
+  if (!Array.isArray(styles)) return styles;
+  
+  return styles.map(style => {
+    if (style && style.type === 'SOLID' && style.color && 'a' in style.color) {
+      // Extract alpha if present and set as opacity
+      const opacity = style.color.a !== undefined ? style.color.a : (style.opacity || 1);
+      
+      // Create a new object without the 'a' property
+      const { r, g, b } = style.color;
+      
+      return {
+        ...style,
+        color: { r, g, b },
+        opacity: opacity
+      };
+    }
+    return style;
+  });
+}
+
+/**
+ * Handler for creating a rectangle directly using Figma's API
+ */
+async function handleCreateRectangle(msg: PluginMessage): Promise<void> {
+  const payload = msg.payload || {};
+  const { 
+    x = 0, 
+    y = 0, 
+    width = 100, 
+    height = 100, 
+    cornerRadius = 0,
+    fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+    strokes = [],
+    effects = [],
+    name = 'Rectangle',
+    parent = '',
+    styles = {}
+  } = payload;
+  
+  try {
+    // Create the rectangle
+    const rect = figma.createRectangle();
+    rect.name = name;
+    
+    // Set basic properties
+    rect.x = x;
+    rect.y = y;
+    rect.resize(width, height);
+    
+    // Set corner radius
+    if (typeof cornerRadius === 'number') {
+      rect.cornerRadius = cornerRadius;
+    } else if (typeof cornerRadius === 'object') {
+      rect.topLeftRadius = cornerRadius.topLeft || 0;
+      rect.topRightRadius = cornerRadius.topRight || 0;
+      rect.bottomLeftRadius = cornerRadius.bottomLeft || 0;
+      rect.bottomRightRadius = cornerRadius.bottomRight || 0;
+    }
+    
+    // Set fills directly (clean fills to remove 'a' property)
+    if (Array.isArray(fills) && fills.length > 0) {
+      try {
+        rect.fills = cleanPaintStyles(fills) as Paint[];
+      } catch (error) {
+        console.error('Error applying fills:', error);
+        sendResponse({
+          type: msg.type,
+          success: false,
+          error: `Failed to apply fills: ${error instanceof Error ? error.message : String(error)}`,
+          id: msg.id,
+          _isResponse: true
+        });
+        return;
+      }
+    }
+    
+    // Set strokes directly (clean strokes to remove 'a' property)
+    if (Array.isArray(strokes) && strokes.length > 0) {
+      try {
+        rect.strokes = cleanPaintStyles(strokes) as Paint[];
+      } catch (error) {
+        console.error('Error applying strokes:', error);
+        sendResponse({
+          type: msg.type,
+          success: false,
+          error: `Failed to apply strokes: ${error instanceof Error ? error.message : String(error)}`,
+          id: msg.id,
+          _isResponse: true
+        });
+        return;
+      }
+    }
+    
+    // Set effects directly
+    if (Array.isArray(effects) && effects.length > 0) {
+      try {
+        rect.effects = effects as Effect[];
+      } catch (error) {
+        console.error('Error applying effects:', error);
+        sendResponse({
+          type: msg.type,
+          success: false,
+          error: `Failed to apply effects: ${error instanceof Error ? error.message : String(error)}`,
+          id: msg.id,
+          _isResponse: true
+        });
+        return;
+      }
+    }
+    
+    // Add to parent if specified
+    if (parent) {
+      const parentNode = figma.getNodeById(parent);
+      if (parentNode && ('appendChild' in parentNode)) {
+        (parentNode as FrameNode | GroupNode | ComponentNode | ComponentSetNode | InstanceNode | PageNode).appendChild(rect);
+      } else {
+        figma.currentPage.appendChild(rect);
+      }
+    } else {
+      figma.currentPage.appendChild(rect);
+    }
+    
+    // Apply extended styles
+    if (Object.keys(styles).length > 0) {
+      await applyExtendedShapeStyles(rect, styles as ExtendedStyleOptions);
+    }
+    
+    // Send success response with node details
+    sendResponse({
+      type: msg.type,
+      success: true,
+      data: getNodeDetails(rect),
+      id: msg.id,
+      _isResponse: true
+    });
+  } catch (error) {
+    sendResponse({
+      type: msg.type,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      id: msg.id,
+      _isResponse: true
+    });
+  }
+}
+
+/**
+ * Handler for creating an ellipse directly using Figma's API
+ */
+async function handleCreateEllipse(msg: PluginMessage): Promise<void> {
+  const payload = msg.payload || {};
+  const { 
+    x = 0, 
+    y = 0, 
+    width = 100, 
+    height = 100,
+    fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+    strokes = [],
+    effects = [],
+    name = 'Ellipse',
+    parent = '',
+    styles = {}
+  } = payload;
+  
+  try {
+    // Create the ellipse
+    const ellipse = figma.createEllipse();
+    ellipse.name = name;
+    
+    // Set basic properties
+    ellipse.x = x;
+    ellipse.y = y;
+    ellipse.resize(width, height);
+    
+    // Set fills directly (clean fills to remove 'a' property)
+    if (Array.isArray(fills) && fills.length > 0) {
+      try {
+        ellipse.fills = cleanPaintStyles(fills) as Paint[];
+      } catch (error) {
+        console.error('Error applying fills:', error);
+        sendResponse({
+          type: msg.type,
+          success: false,
+          error: `Failed to apply fills: ${error instanceof Error ? error.message : String(error)}`,
+          id: msg.id,
+          _isResponse: true
+        });
+        return;
+      }
+    }
+    
+    // Set strokes directly (clean strokes to remove 'a' property)
+    if (Array.isArray(strokes) && strokes.length > 0) {
+      try {
+        ellipse.strokes = cleanPaintStyles(strokes) as Paint[];
+      } catch (error) {
+        console.error('Error applying strokes:', error);
+        sendResponse({
+          type: msg.type,
+          success: false,
+          error: `Failed to apply strokes: ${error instanceof Error ? error.message : String(error)}`,
+          id: msg.id,
+          _isResponse: true
+        });
+        return;
+      }
+    }
+    
+    // Set effects directly
+    if (Array.isArray(effects) && effects.length > 0) {
+      try {
+        ellipse.effects = effects as Effect[];
+      } catch (error) {
+        console.error('Error applying effects:', error);
+        sendResponse({
+          type: msg.type,
+          success: false,
+          error: `Failed to apply effects: ${error instanceof Error ? error.message : String(error)}`,
+          id: msg.id,
+          _isResponse: true
+        });
+        return;
+      }
+    }
+    
+    // Add to parent if specified
+    if (parent) {
+      const parentNode = figma.getNodeById(parent);
+      if (parentNode && ('appendChild' in parentNode)) {
+        (parentNode as FrameNode | GroupNode | ComponentNode | ComponentSetNode | InstanceNode | PageNode).appendChild(ellipse);
+      } else {
+        figma.currentPage.appendChild(ellipse);
+      }
+    } else {
+      figma.currentPage.appendChild(ellipse);
+    }
+    
+    // Apply extended styles
+    if (Object.keys(styles).length > 0) {
+      await applyExtendedShapeStyles(ellipse, styles as ExtendedStyleOptions);
+    }
+    
+    // Send success response with node details
+    sendResponse({
+      type: msg.type,
+      success: true,
+      data: getNodeDetails(ellipse),
+      id: msg.id,
+      _isResponse: true
+    });
+  } catch (error) {
+    sendResponse({
+      type: msg.type,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      id: msg.id,
+      _isResponse: true
+    });
+  }
+}
+
+/**
+ * Handler for creating text directly using Figma's API
+ */
+async function handleCreateText(msg: PluginMessage): Promise<void> {
+  const payload = msg.payload || {};
+  const { 
+    x = 0, 
+    y = 0,
+    characters = '',
+    fontSize = 14,
+    fontName = { family: 'Inter', style: 'Regular' },
+    fills = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }],
+    textAlignHorizontal = 'LEFT',
+    textAlignVertical = 'TOP',
+    name = 'Text',
+    parent = '',
+    styles = {}
+  } = payload;
+  
+  try {
+    // Create the text
+    const text = figma.createText();
+    text.name = name;
+    
+    // Set basic properties
+    text.x = x;
+    text.y = y;
+    
+    // Load font first
+    try {
+      await figma.loadFontAsync(fontName);
+      text.fontName = fontName;
+    } catch (e) {
+      console.warn('Failed to load specified font, using fallback:', e);
+      await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
+      text.fontName = { family: 'Inter', style: 'Regular' };
+    }
+    
+    // Set text content
+    text.characters = characters;
+    
+    // Set font size
+    if (fontSize) {
+      text.fontSize = fontSize;
+    }
+    
+    // Set text alignment
+    text.textAlignHorizontal = textAlignHorizontal as 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED';
+    text.textAlignVertical = textAlignVertical as 'TOP' | 'CENTER' | 'BOTTOM';
+    
+    // Set fills with cleaned colors
+    if (Array.isArray(fills) && fills.length > 0) {
+      text.fills = cleanPaintStyles(fills) as Paint[];
+    }
+    
+    // Add to parent if specified
+    if (parent) {
+      const parentNode = figma.getNodeById(parent);
+      if (parentNode && ('appendChild' in parentNode)) {
+        (parentNode as FrameNode | GroupNode | ComponentNode | ComponentSetNode | InstanceNode | PageNode).appendChild(text);
+      } else {
+        figma.currentPage.appendChild(text);
+      }
+    } else {
+      figma.currentPage.appendChild(text);
+    }
+    
+    // Apply extended styles
+    if (Object.keys(styles).length > 0) {
+      await applyExtendedTextStyles(text, styles as ExtendedStyleOptions);
+    }
+    
+    // Send success response with node details
+    sendResponse({
+      type: msg.type,
+      success: true,
+      data: getNodeDetails(text),
+      id: msg.id,
+      _isResponse: true
+    });
+  } catch (error) {
+    sendResponse({
+      type: msg.type,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      id: msg.id,
+      _isResponse: true
+    });
+  }
+}
+
+/**
+ * Handler for creating a frame directly using Figma's API
+ */
+async function handleCreateFrame(msg: PluginMessage): Promise<void> {
+  const payload = msg.payload || {};
+  const { 
+    x = 0, 
+    y = 0, 
+    width = 400, 
+    height = 300,
+    fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+    strokes = [],
+    effects = [],
+    cornerRadius = 0,
+    layoutMode = 'NONE',
+    primaryAxisAlignItems = 'MIN',
+    counterAxisAlignItems = 'MIN',
+    itemSpacing = 0,
+    paddingLeft = 0,
+    paddingRight = 0,
+    paddingTop = 0,
+    paddingBottom = 0,
+    name = 'Frame',
+    parent = '',
+    styles = {}
+  } = payload;
+  
+  try {
+    // Create the frame
+    const frame = figma.createFrame();
+    frame.name = name;
+    
+    // Set basic properties
+    frame.x = x;
+    frame.y = y;
+    frame.resize(width, height);
+    
+    // Set corner radius
+    if (typeof cornerRadius === 'number') {
+      frame.cornerRadius = cornerRadius;
+    } else if (typeof cornerRadius === 'object') {
+      frame.topLeftRadius = cornerRadius.topLeft || 0;
+      frame.topRightRadius = cornerRadius.topRight || 0;
+      frame.bottomLeftRadius = cornerRadius.bottomLeft || 0;
+      frame.bottomRightRadius = cornerRadius.bottomRight || 0;
+    }
+    
+    // Set fills with cleaned colors
+    if (Array.isArray(fills) && fills.length > 0) {
+      frame.fills = cleanPaintStyles(fills) as Paint[];
+    }
+    
+    // Set strokes with cleaned colors
+    if (Array.isArray(strokes) && strokes.length > 0) {
+      frame.strokes = cleanPaintStyles(strokes) as Paint[];
+    }
+    
+    // Set effects
+    if (Array.isArray(effects) && effects.length > 0) {
+      frame.effects = effects as Effect[];
+    }
+    
+    // Set layout properties
+    if (layoutMode !== 'NONE') {
+      frame.layoutMode = layoutMode as 'HORIZONTAL' | 'VERTICAL';
+      frame.primaryAxisAlignItems = primaryAxisAlignItems as 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN';
+      frame.counterAxisAlignItems = counterAxisAlignItems as 'MIN' | 'CENTER' | 'MAX';
+      frame.itemSpacing = itemSpacing;
+      frame.paddingLeft = paddingLeft;
+      frame.paddingRight = paddingRight;
+      frame.paddingTop = paddingTop;
+      frame.paddingBottom = paddingBottom;
+    }
+    
+    // Add to parent if specified
+    if (parent) {
+      const parentNode = figma.getNodeById(parent);
+      if (parentNode && ('appendChild' in parentNode)) {
+        (parentNode as FrameNode | GroupNode | ComponentNode | ComponentSetNode | InstanceNode | PageNode).appendChild(frame);
+      } else {
+        figma.currentPage.appendChild(frame);
+      }
+    } else {
+      figma.currentPage.appendChild(frame);
+    }
+    
+    // Apply extended styles
+    if (Object.keys(styles).length > 0) {
+      await applyExtendedContainerStyles(frame, styles as ExtendedStyleOptions);
+    }
+    
+    // Send success response with node details
+    sendResponse({
+      type: msg.type,
+      success: true,
+      data: getNodeDetails(frame),
+      id: msg.id,
+      _isResponse: true
+    });
+  } catch (error) {
+    sendResponse({
+      type: msg.type,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      id: msg.id,
+      _isResponse: true
+    });
+  }
+}
+
+/**
+ * Handler for creating a component directly using Figma's API
+ */
+async function handleCreateComponent(msg: PluginMessage): Promise<void> {
+  const payload = msg.payload || {};
+  const { 
+    x = 0, 
+    y = 0, 
+    width = 400, 
+    height = 300,
+    fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+    strokes = [],
+    effects = [],
+    cornerRadius = 0,
+    layoutMode = 'NONE',
+    primaryAxisAlignItems = 'MIN',
+    counterAxisAlignItems = 'MIN',
+    itemSpacing = 0,
+    paddingLeft = 0,
+    paddingRight = 0,
+    paddingTop = 0,
+    paddingBottom = 0,
+    name = 'Component',
+    parent = '',
+    styles = {}
+  } = payload;
+  
+  try {
+    // Create the component
+    const component = figma.createComponent();
+    component.name = name;
+    
+    // Set basic properties
+    component.x = x;
+    component.y = y;
+    component.resize(width, height);
+    
+    // Set corner radius
+    if (typeof cornerRadius === 'number') {
+      component.cornerRadius = cornerRadius;
+    } else if (typeof cornerRadius === 'object') {
+      component.topLeftRadius = cornerRadius.topLeft || 0;
+      component.topRightRadius = cornerRadius.topRight || 0;
+      component.bottomLeftRadius = cornerRadius.bottomLeft || 0;
+      component.bottomRightRadius = cornerRadius.bottomRight || 0;
+    }
+    
+    // Set fills with cleaned colors
+    if (Array.isArray(fills) && fills.length > 0) {
+      component.fills = cleanPaintStyles(fills) as Paint[];
+    }
+    
+    // Set strokes with cleaned colors
+    if (Array.isArray(strokes) && strokes.length > 0) {
+      component.strokes = cleanPaintStyles(strokes) as Paint[];
+    }
+    
+    // Set effects
+    if (Array.isArray(effects) && effects.length > 0) {
+      component.effects = effects as Effect[];
+    }
+    
+    // Set layout properties
+    if (layoutMode !== 'NONE') {
+      component.layoutMode = layoutMode as 'HORIZONTAL' | 'VERTICAL';
+      component.primaryAxisAlignItems = primaryAxisAlignItems as 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN';
+      component.counterAxisAlignItems = counterAxisAlignItems as 'MIN' | 'CENTER' | 'MAX';
+      component.itemSpacing = itemSpacing;
+      component.paddingLeft = paddingLeft;
+      component.paddingRight = paddingRight;
+      component.paddingTop = paddingTop;
+      component.paddingBottom = paddingBottom;
+    }
+    
+    // Add to parent if specified
+    if (parent) {
+      const parentNode = figma.getNodeById(parent);
+      if (parentNode && ('appendChild' in parentNode)) {
+        (parentNode as FrameNode | GroupNode | ComponentNode | ComponentSetNode | InstanceNode | PageNode).appendChild(component);
+      } else {
+        figma.currentPage.appendChild(component);
+      }
+    } else {
+      figma.currentPage.appendChild(component);
+    }
+    
+    // Apply extended styles
+    if (Object.keys(styles).length > 0) {
+      await applyExtendedContainerStyles(component, styles as ExtendedStyleOptions);
+    }
+    
+    // Send success response with node details
+    sendResponse({
+      type: msg.type,
+      success: true,
+      data: getNodeDetails(component),
+      id: msg.id,
+      _isResponse: true
+    });
+  } catch (error) {
+    sendResponse({
+      type: msg.type,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      id: msg.id,
+      _isResponse: true
+    });
+  }
+}
+
+/**
+ * Handler for creating a line directly using Figma's API
+ */
+async function handleCreateLine(msg: PluginMessage): Promise<void> {
+  const payload = msg.payload || {};
+  const { 
+    x = 0, 
+    y = 0, 
+    width = 100, 
+    height = 0, 
+    strokes = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }],
+    strokeWeight = 1,
+    strokeCap = 'NONE',
+    name = 'Line',
+    parent = '',
+    styles = {}
+  } = payload;
+  
+  try {
+    // Create a vector (line)
+    const line = figma.createLine();
+    line.name = name;
+    
+    // Set position
+    line.x = x;
+    line.y = y;
+    
+    // Set dimensions
+    line.resize(width, height);
+    
+    // Set stroke properties
+    if (Array.isArray(strokes) && strokes.length > 0) {
+      line.strokes = cleanPaintStyles(strokes) as Paint[];
+    }
+    
+    if (strokeWeight) {
+      line.strokeWeight = strokeWeight;
+    }
+    
+    if (strokeCap) {
+      // @ts-ignore
+      line.strokeCap = strokeCap;
+    }
+    
+    // Add to parent if specified
+    if (parent) {
+      const parentNode = figma.getNodeById(parent);
+      if (parentNode && ('appendChild' in parentNode)) {
+        (parentNode as FrameNode | GroupNode | ComponentNode | ComponentSetNode | InstanceNode | PageNode).appendChild(line);
+      } else {
+        figma.currentPage.appendChild(line);
+      }
+    } else {
+      figma.currentPage.appendChild(line);
+    }
+    
+    // Apply extended styles
+    if (Object.keys(styles).length > 0) {
+      await applyExtendedShapeStyles(line, styles as ExtendedStyleOptions);
+    }
+    
+    // Send success response with node details
+    sendResponse({
+      type: msg.type,
+      success: true,
+      data: getNodeDetails(line),
+      id: msg.id,
+      _isResponse: true
+    });
+  } catch (error) {
+    sendResponse({
+      type: msg.type,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      id: msg.id,
+      _isResponse: true
+    });
+  }
 }

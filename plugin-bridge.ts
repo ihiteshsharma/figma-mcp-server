@@ -80,7 +80,13 @@ export type PluginCommand =
   | { type: 'ARRANGE_LAYOUT', payload: any, id?: string }
   | { type: 'EXPORT_DESIGN', payload: any, id?: string }
   | { type: 'GET_SELECTION', payload?: any, id?: string }
-  | { type: 'GET_CURRENT_PAGE', payload?: any, id?: string };
+  | { type: 'GET_CURRENT_PAGE', payload?: any, id?: string }
+  | { type: 'CREATE_RECTANGLE', payload: any, id?: string }
+  | { type: 'CREATE_ELLIPSE', payload: any, id?: string }
+  | { type: 'CREATE_TEXT', payload: any, id?: string }
+  | { type: 'CREATE_FRAME', payload: any, id?: string }
+  | { type: 'CREATE_COMPONENT', payload: any, id?: string }
+  | { type: 'CREATE_LINE', payload: any, id?: string };
 
 // Define a more specific type for responses from the plugin that will be mapped to MCP
 export type PluginResponse = {

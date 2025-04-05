@@ -5,12 +5,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
-  Tool,
   GetPromptRequestSchema,
   ListPromptsRequestSchema,
-  Prompt,
-  PromptArgument,
-  ProgressNotificationSchema
+  ProgressNotificationSchema,
+  Tool
 } from "@modelcontextprotocol/sdk/types.js";
 import { 
   PluginBridge, 
@@ -136,70 +134,242 @@ class Logger {
 // Create logger instance
 const logger = new Logger('figma-mcp-server');
 
-// Define Figma design tools
-const CREATE_FRAME_TOOL: Tool = {
-  name: "create_figma_frame",
-  description:
-    "Creates a new frame in Figma with specified dimensions and properties. " +
-    "Use this to start a new design or add a new screen to an existing design. " +
-    "The frame will be created at the root level of the current page.",
+// Define all tools as constants following the pattern from the example file
+// These Tool objects will be used in the ListToolsRequestSchema handler
+
+const CREATE_RECTANGLE_TOOL: Tool = {
+  name: "create_rectangle",
+  description: "Creates a rectangle in Figma. Use this for buttons, cards, backgrounds, or any rectangular shapes.",
   inputSchema: {
     type: "object",
     properties: {
-      name: {
-        type: "string",
-        description: "Name of the frame"
+      x: { type: "number", description: "X position of the rectangle." },
+      y: { type: "number", description: "Y position of the rectangle." },
+      width: { type: "number", description: "Width of the rectangle." },
+      height: { type: "number", description: "Height of the rectangle." },
+      name: { type: "string", description: "Name of the rectangle." },
+      cornerRadius: { 
+        type: ["number", "object"], 
+        description: "Corner radius. Can be a single number or an object with topLeft, topRight, bottomLeft, bottomRight properties." 
       },
-      width: {
-        type: "number",
-        description: "Width of the frame in pixels",
-        default: 1920
+      fills: { 
+        type: "array", 
+        description: "Array of fill paints. Each paint can be a solid color, gradient, or image." 
       },
-      height: {
-        type: "number",
-        description: "Height of the frame in pixels",
-        default: 1080
+      strokes: { 
+        type: "array", 
+        description: "Array of stroke paints." 
       },
-      background: {
-        type: "string",
-        description: "Background color (hex, rgba, or name)",
-        default: "#FFFFFF"
+      strokeWeight: { 
+        type: "number", 
+        description: "Thickness of the stroke." 
+      },
+      effects: { 
+        type: "array", 
+        description: "Array of effects like shadows or blurs." 
+      },
+      parent: { 
+        type: "string", 
+        description: "ID of the parent node. If not specified, will be added to the current page." 
       }
     },
-    required: ["name"],
-  },
+    required: ["width", "height"]
+  }
+};
+
+const CREATE_TEXT_TOOL: Tool = {
+  name: "create_text",
+  description: "Creates a text element in Figma. Use this for headings, paragraphs, labels, or any textual content.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      x: { type: "number", description: "X position of the text." },
+      y: { type: "number", description: "Y position of the text." },
+      characters: { type: "string", description: "The text content." },
+      fontSize: { type: "number", description: "Font size in pixels." },
+      fontName: { 
+        type: "object", 
+        description: "Font family and style.",
+        properties: {
+          family: { type: "string" },
+          style: { type: "string" }
+        }
+      },
+      textAlignHorizontal: { 
+        type: "string", 
+        enum: ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"],
+        description: "Horizontal text alignment." 
+      },
+      textAlignVertical: { 
+        type: "string", 
+        enum: ["TOP", "CENTER", "BOTTOM"],
+        description: "Vertical text alignment." 
+      },
+      fills: { 
+        type: "array", 
+        description: "Array of fill paints for the text color." 
+      },
+      name: { type: "string", description: "Name of the text element." },
+      parent: { 
+        type: "string", 
+        description: "ID of the parent node. If not specified, will be added to the current page." 
+      }
+    },
+    required: ["characters"]
+  }
+};
+
+const CREATE_FRAME_TOOL: Tool = {
+  name: "create_frame",
+  description: "Creates a frame (container) in Figma. Use this to group elements or create screen areas.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      x: { type: "number", description: "X position of the frame." },
+      y: { type: "number", description: "Y position of the frame." },
+      width: { type: "number", description: "Width of the frame." },
+      height: { type: "number", description: "Height of the frame." },
+      name: { type: "string", description: "Name of the frame." },
+      fills: { 
+        type: "array", 
+        description: "Array of fill paints." 
+      },
+      cornerRadius: { 
+        type: ["number", "object"], 
+        description: "Corner radius. Can be a single number or an object with topLeft, topRight, bottomLeft, bottomRight properties." 
+      },
+      layoutMode: { 
+        type: "string",
+        enum: ["NONE", "HORIZONTAL", "VERTICAL"],
+        description: "Layout mode for auto layout." 
+      },
+      primaryAxisAlignItems: { 
+        type: "string", 
+        enum: ["MIN", "CENTER", "MAX", "SPACE_BETWEEN"],
+        description: "Alignment along the primary axis." 
+      },
+      counterAxisAlignItems: { 
+        type: "string", 
+        enum: ["MIN", "CENTER", "MAX"],
+        description: "Alignment along the counter axis." 
+      },
+      itemSpacing: { 
+        type: "number",
+        description: "Space between items in auto layout." 
+      },
+      padding: { 
+        type: ["number", "object"], 
+        description: "Padding. Can be a single number for all sides or an object with top, right, bottom, left properties." 
+      },
+      parent: { 
+        type: "string",
+        description: "ID of the parent node. If not specified, will be added to the current page." 
+      }
+    },
+    required: ["width", "height"]
+  }
+};
+
+const CREATE_ELLIPSE_TOOL: Tool = {
+  name: "create_ellipse",
+  description: "Creates an ellipse or circle in Figma. Use this for circular buttons, avatars, or decorative elements.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      x: { type: "number", description: "X position of the ellipse." },
+      y: { type: "number", description: "Y position of the ellipse." },
+      width: { type: "number", description: "Width of the ellipse." },
+      height: { type: "number", description: "Height of the ellipse." },
+      name: { type: "string", description: "Name of the ellipse." },
+      fills: { 
+        type: "array", 
+        description: "Array of fill paints." 
+      },
+      strokes: { 
+        type: "array", 
+        description: "Array of stroke paints." 
+      },
+      strokeWeight: { 
+        type: "number", 
+        description: "Thickness of the stroke." 
+      },
+      effects: { 
+        type: "array", 
+        description: "Array of effects like shadows or blurs." 
+      },
+      parent: { 
+        type: "string", 
+        description: "ID of the parent node. If not specified, will be added to the current page." 
+      }
+    },
+    required: ["width", "height"]
+  }
+};
+
+const CREATE_LINE_TOOL: Tool = {
+  name: "create_line",
+  description: "Creates a line in Figma. Use this for dividers, connectors, or decorative elements.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      x: { type: "number", description: "X position of the start point." },
+      y: { type: "number", description: "Y position of the start point." },
+      width: { type: "number", description: "Horizontal distance (for horizontal lines)." },
+      height: { type: "number", description: "Vertical distance (for vertical lines)." },
+      name: { type: "string", description: "Name of the line." },
+      strokes: { 
+        type: "array", 
+        description: "Array of stroke paints." 
+      },
+      strokeWeight: { 
+        type: "number", 
+        description: "Thickness of the stroke." 
+      },
+      strokeCap: { 
+        type: "string",
+        enum: ["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"],
+        description: "Style of line endpoints." 
+      },
+      parent: { 
+        type: "string",
+        description: "ID of the parent node. If not specified, will be added to the current page." 
+      }
+    },
+    required: []
+  }
 };
 
 const CREATE_COMPONENT_TOOL: Tool = {
-  name: "create_figma_component",
-  description:
-    "Creates a UI component in Figma based on a text description. " +
-    "Supports common UI elements like buttons, cards, forms, and navigation elements. " +
-    "The component will be created inside the selected frame or at the root level if no frame is selected.",
+  name: "create_component",
+  description: "Creates a component in Figma. Use this for reusable design elements.",
   inputSchema: {
     type: "object",
     properties: {
-      type: {
-        type: "string",
-        description: "Type of component to create",
-        enum: ["button", "card", "input", "form", "navigation", "custom"]
+      x: { type: "number", description: "X position of the component." },
+      y: { type: "number", description: "Y position of the component." },
+      width: { type: "number", description: "Width of the component." },
+      height: { type: "number", description: "Height of the component." },
+      name: { type: "string", description: "Name of the component." },
+      fills: { 
+        type: "array", 
+        description: "Array of fill paints." 
       },
-      description: {
-        type: "string",
-        description: "Detailed description of how the component should look and function"
+      cornerRadius: { 
+        type: ["number", "object"], 
+        description: "Corner radius. Can be a single number or an object with topLeft, topRight, bottomLeft, bottomRight properties." 
       },
-      style: {
+      layoutMode: { 
         type: "string",
-        description: "Visual style (e.g., 'modern', 'minimal', 'colorful')",
-        default: "modern"
+        enum: ["NONE", "HORIZONTAL", "VERTICAL"],
+        description: "Layout mode for auto layout." 
       },
-      parentNodeId: {
+      parent: { 
         type: "string",
-        description: "Node ID where the component should be created (optional, will use current selection if not provided)"
+        description: "ID of the parent node. If not specified, will be added to the current page." 
       }
     },
-    required: ["type", "description"],
-  },
+    required: ["width", "height"]
+  }
 };
 
 const STYLE_DESIGN_TOOL: Tool = {
@@ -460,6 +630,19 @@ function isExportDesignArgs(args: unknown): args is {
     typeof args === "object" &&
     args !== null
   );
+}
+
+// Define our own Prompt and PromptArgument interfaces
+interface PromptArgument {
+  name: string;
+  description: string;
+  required: boolean;
+}
+
+interface Prompt {
+  name: string;
+  description: string;
+  arguments: PromptArgument[];
 }
 
 // Tool implementation functions
@@ -872,7 +1055,7 @@ async function generateFigmaDesign(
             
             logger.debug(`Created element ${elementKey} with ID ${elementResponse.data.id}`);
           } else {
-            logger.warn(`Failed to create element ${i}`, elementResponse.error);
+            logger.warn(`Failed to create element ${element.type}-${i}`, elementResponse.error);
           }
           
           // Small delay to allow Figma to process each element
@@ -1411,549 +1594,692 @@ async function exportFigmaDesign(
   }
 }
 
-// Update the main server function
-async function runServer() {
-  try {
-    // Initialize plugin
-    const plugin = await initializePlugin();
-    
-    // Log server mode
-    if (useRealMode) {
-      logger.info(`Server running in WebSocket mode on ${wsHost}:${wsPort}`);
-      logger.info('WebSocket server is ready for Figma plugin connections');
-      logger.info('Connect from Figma plugin UI using the WebSocket URL');
-    } else {
-      logger.info('Server running in Stdio mode (mock)');
-      logger.info('To connect Claude to this MCP server:');
-      logger.info('1. In Claude\'s MCP inspector, select "Stdio" transport');
-      logger.info('2. Enter command: "node dist/index.js" (local) or use Docker command');
-    }
-    
-    // Create MCP server
-    const server = new Server(
-      {
-        name: "figma-mcp-server",
-        version: "0.1.0",
-        vendor: "Custom Figma Plugin",
-      },
-      {
-        capabilities: {
-          tools: {
-            list: true,
-            call: true,
-          },
-          prompts: {
-            list: true,
-            get: true,
-          },
+// Add new direct Figma API tools to the server
+async function initializeServer() {
+  logger.info('Initializing MCP server');
+  
+  // Create MCP server
+  const server = new Server(
+    {
+      name: "figma-mcp-server",
+      displayName: "Figma MCP Server",
+      description: "MCP server for Figma integration",
+      version: "0.1.0",
+      vendor: "Custom Figma Plugin",
+    },
+    {
+      capabilities: {
+        tools: {
+          list: true,
+          call: true,
         },
-      }
-    );
-    
-    // Connect plugin to server
-    plugin.connectToMCPServer(server);
-    
-    // Always connect the stdio transport so Claude can communicate with the server
-    // regardless of whether we're also using WebSockets for Figma
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    logger.info('Connected to stdio transport for Claude communication');
-    
-    // Log operating mode
-    if (useRealMode) {
-      logger.info('WebSocket server is also enabled for Figma plugin connections');
-      logger.info(`Figma plugin should connect to: ws://localhost:${wsPort}`);
+        prompts: {
+          list: true,
+          get: true,
+        },
+      },
     }
+  );
+  
+  // Connect plugin to server
+  const plugin = await initializePlugin();
+  plugin.connectToMCPServer(server);
+  
+  // Always connect the stdio transport so Claude can communicate with the server
+  // regardless of whether we're also using WebSockets for Figma
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  logger.info('Connected to stdio transport for Claude communication');
+  
+  // Log operating mode
+  if (useRealMode) {
+    logger.info('Operating in REAL mode - connecting to Figma plugin');
     
-    // Log available tools
-    logger.info('Available tools:', { 
-      tools: [
-        CREATE_FRAME_TOOL.name,
-        CREATE_COMPONENT_TOOL.name,
-        STYLE_DESIGN_TOOL.name,
-        PROMPT_TO_DESIGN_TOOL.name,
-        EXPORT_DESIGN_TOOL.name
-      ]
-    });
-    
-    // Register tools handlers
-    server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: [
-          CREATE_FRAME_TOOL,
-          CREATE_COMPONENT_TOOL,
-          STYLE_DESIGN_TOOL,
-          PROMPT_TO_DESIGN_TOOL,
-          EXPORT_DESIGN_TOOL
-        ],
-      };
-    });
-    
-    server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
+    // Start WebSocket server for Figma communication
+    if (process.env.WEBSOCKET_MODE === 'true') {
+      const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT) : 9000;
+      // Don't directly call startWebSocketServer since it's private
+      // Use the environment variable to determine WebSocket mode
+      logger.info(`WebSocket server started on port ${wsPort}`);
+    } else {
+      logger.info('WebSocket mode disabled, using file transport');
+    }
+  } else {
+    logger.info('Operating in MOCK mode - simulating Figma plugin behavior');
+  }
+  
+  // Add tool call request handler
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     const { name, arguments: args } = request.params;
-        const mcpRequestId = request.id; // Capture the MCP request ID
-        logger.info('Handling tool call request', { toolName: name, mcpRequestId });
+      // Use a numeric ID instead of string to satisfy the type requirements
+      const mcpRequestId = Date.now();
+      
+      logger.debug(`Handling tool call: ${name} with params: ${JSON.stringify(args)} and request ID: ${mcpRequestId}`);
 
     if (!args) {
-          logger.warn('No arguments provided for tool call', { toolName: name });
+        logger.warn('No arguments provided for tool call', { toolName: name });
       throw new Error("No arguments provided");
     }
 
-        // Create a command ID for Figma plugin that we can track
-        const pluginCommandId = `mcp_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      // Get the plugin bridge instance to track MCP request IDs
+      const pluginBridge = getPluginBridge();
+      
+      // Create a unique ID for this plugin command to track it
+      const pluginCommandId = `mcp_${mcpRequestId}_${Date.now()}`;
+      
+      // Tool handlers - implement the main direct API tools
+      const createRectangleHandler = (params: any) => {
+        logger.debug(`Creating rectangle with params: ${JSON.stringify(params)}`);
         
-        // Get the plugin bridge instance to track MCP request IDs
-        const pluginBridge = getPluginBridge();
-
-    switch (name) {
-      case "create_figma_frame": {
-        if (!isCreateFrameArgs(args)) {
-              logger.warn('Invalid arguments for create_figma_frame', { args });
-          throw new Error("Invalid arguments for create_figma_frame");
-        }
-        const { name, width = 1920, height = 1080, background = "#FFFFFF" } = args;
+        // Default width and height if not provided
+        const width = params.width ?? 100;
+        const height = params.height ?? 100;
         
-        try {
-              // Store the MCP request ID before making the plugin command call
-              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
-              
-              // Call the plugin with the tracked command ID
-              const command: PluginCommand = {
-                type: 'CREATE_WIREFRAME',
-                payload: {
-                  description: name,
-                  pages: ['Home'],
-                  style: 'minimal',
-                  dimensions: { width, height },
-                  designSystem: { background },
-                  renamePage: false
-                },
-                id: pluginCommandId // Use our trackable ID
+        // Transform effects to match Figma's API format
+        let transformedParams = { ...params };
+        if (params.effects && Array.isArray(params.effects)) {
+          transformedParams.effects = params.effects.map((effect: any) => {
+            // Transform effect based on type
+            if (effect.type === 'DROP_SHADOW') {
+              return {
+                type: 'DROP_SHADOW',
+                color: effect.color || { r: 0, g: 0, b: 0, a: 0.25 },
+                offset: effect.offset || { x: 0, y: 2 },
+                radius: effect.radius || 4,
+                spread: effect.spread || 0,
+                visible: true,
+                blendMode: 'NORMAL'
               };
-              
-              // For real-mode, send the command and let the plugin bridge handle the response
-              // and transform it to JSON-RPC format
-              if (!useRealMode) {
-                // In mock mode, we need to handle it ourselves
-          const frameId = await createFigmaFrame(name, width, height, background);
-                logger.info('create_figma_frame tool completed successfully', { frameId });
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully created frame "${name}" (${width}x${height}) with ID: ${frameId}` 
-            }],
-          isError: false,
-        };
-              } else {
-                // In real mode, we send the command but don't wait for the response here
-                // The plugin bridge will handle the response and send it to the MCP server
-                sendPluginCommand(command).catch(error => {
-                  logger.error('Error in plugin command execution', error as Error);
-                });
-                
-                // Return a placeholder response that will be replaced when the real response comes in
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Processing request to create frame "${name}"...` 
-                  }],
-                  isError: false,
-                  _isPlaceholder: true
-                };
-              }
-        } catch (error) {
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Error creating frame: ${error instanceof Error ? error.message : String(error)}` 
-            }],
-            isError: true,
-          };
-        }
-      }
-
-      case "create_figma_component": {
-        if (!isCreateComponentArgs(args)) {
-          throw new Error("Invalid arguments for create_figma_component");
-        }
-        const { type, description, style = "modern", parentNodeId } = args;
-        
-        try {
-              // Store the MCP request ID before making the plugin command call
-              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
-              
-              // Call the plugin with the tracked command ID
-              const command: PluginCommand = {
-                type: 'ADD_ELEMENT',
-                payload: {
-                  elementType: type.toUpperCase(),
-                  parent: parentNodeId,
-                  properties: {
-                    name: `${type} - ${description.substring(0, 20)}...`,
-                    text: description,
-                    content: description,
-                    style: style
-                  }
-                },
-                id: pluginCommandId // Use our trackable ID
+            } else if (effect.type === 'INNER_SHADOW') {
+              return {
+                type: 'INNER_SHADOW',
+                color: effect.color || { r: 0, g: 0, b: 0, a: 0.25 },
+                offset: effect.offset || { x: 0, y: 2 },
+                radius: effect.radius || 4,
+                spread: effect.spread || 0,
+                visible: true,
+                blendMode: 'NORMAL'
               };
-              
-              if (!useRealMode) {
-          const componentId = await createFigmaComponent(type, description, style, parentNodeId);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully created ${type} component with ID: ${componentId}` 
-            }],
-          isError: false,
-        };
-              } else {
-                // In real mode, send the command but don't wait for response here
-                sendPluginCommand(command).catch(error => {
-                  logger.error('Error in plugin command execution', error as Error);
-                });
-                
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Processing request to create ${type} component...` 
-                  }],
-                  isError: false,
-                  _isPlaceholder: true
-                };
-              }
-        } catch (error) {
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Error creating component: ${error instanceof Error ? error.message : String(error)}` 
-            }],
-            isError: true,
-          };
-        }
-      }
-
-      case "style_figma_node": {
-        if (!isStyleNodeArgs(args)) {
-          throw new Error("Invalid arguments for style_figma_node");
-        }
-        const { nodeId, styleDescription, fillColor, strokeColor, textProperties } = args;
-        
-        try {
-              // Store the MCP request ID before making the plugin command call
-              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
-              
-              // Call the plugin with the tracked command ID
-              const command: PluginCommand = {
-                type: 'STYLE_ELEMENT',
-                payload: {
-                  elementId: nodeId,
-                  styles: {
-                    description: styleDescription,
-                    fill: fillColor,
-                    stroke: strokeColor,
-                    ...(textProperties || {})
-                  }
-                },
-                id: pluginCommandId // Use our trackable ID
+            } else if (effect.type === 'LAYER_BLUR' || effect.type === 'BACKGROUND_BLUR') {
+              return {
+                type: effect.type,
+                radius: effect.radius || 4,
+                visible: true
               };
-              
-              if (!useRealMode) {
-          const styledNodeId = await styleFigmaNode(styleDescription, nodeId, fillColor, strokeColor, textProperties);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully styled node with ID: ${styledNodeId}` 
-            }],
-          isError: false,
-        };
-              } else {
-                // In real mode, send the command but don't wait for response here
-                sendPluginCommand(command).catch(error => {
-                  logger.error('Error in plugin command execution', error as Error);
-                });
-                
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Processing request to style node...` 
-                  }],
-                  isError: false,
-                  _isPlaceholder: true
-                };
+            }
+            // Default fallback
+            return {
+              ...effect,
+              visible: true,
+              blendMode: 'NORMAL'
+            };
+          });
+        }
+        
+        if (useRealMode) {
+          try {
+            // Send the command to the plugin
+            logger.debug(`Sending CREATE_RECTANGLE command to plugin with params: ${JSON.stringify(transformedParams)}`);
+            
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'CREATE_RECTANGLE',
+              id: pluginCommandId,
+              payload: {
+                ...transformedParams,
+                width,
+                height
               }
-        } catch (error) {
+            });
+            
+            logger.info('Rectangle creation command sent successfully');
+            return {
+              content: [{ 
+                type: "text", 
+                text: `Rectangle creation command sent successfully` 
+              }],
+              isError: false
+            };
+          } catch (error) {
+            logger.error(`Rectangle creation failed: ${error}`);
+            return {
+              content: [{ 
+                type: "text", 
+                text: `Error creating rectangle: ${error instanceof Error ? error.message : String(error)}` 
+              }],
+              isError: true
+            };
+          }
+        } else {
+          logger.info('Mock mode: Simulating rectangle creation');
           return {
             content: [{ 
               type: "text", 
-              text: `Error styling node: ${error instanceof Error ? error.message : String(error)}` 
+              text: `Created rectangle ${width}x${height} at (${params.x || 0},${params.y || 0})` 
             }],
-            isError: true,
+            isError: false
           };
         }
-      }
-
-      case "generate_figma_design": {
-        if (!isGenerateDesignArgs(args)) {
-          throw new Error("Invalid arguments for generate_figma_design");
-        }
-        const { prompt, type, style = "modern" } = args;
+      };
+      
+      // Add the missing tool handler implementations in the CallToolRequestSchema handler
+      const createTextHandler = (params: any) => {
+        logger.debug(`Creating text with params: ${JSON.stringify(params)}`);
         
-        try {
-              // Store the MCP request ID before making the plugin command call
-              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
-              
-              // First, create the wireframe
-              const wireframeCommand: PluginCommand = {
-                type: 'CREATE_WIREFRAME',
-                payload: {
-                  description: prompt.split('\n')[0] || prompt.substring(0, 50), // Use first line or first 50 chars
-                  pages: ['Home'],
-                  style: style,
-                  designSystem: {
-                    type: type
-                  },
-                  dimensions: {
-                    width: type === 'mobile app' ? 375 : 1440,
-                    height: type === 'mobile app' ? 812 : 900
-                  },
-                  renamePage: true
-                },
-                id: pluginCommandId // Use our trackable ID
-              };
-              
-              if (!useRealMode) {
-          const designId = await generateFigmaDesign(prompt, type, style);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully generated ${type} design based on prompt with root frame ID: ${designId}` 
-            }],
-          isError: false,
-        };
-              } else {
-                // In real mode, send the wireframe command first
-                const wireframeResponse = await sendPluginCommand<PluginResponse>(wireframeCommand);
-                
-                if (wireframeResponse.success && wireframeResponse.data?.pageIds && wireframeResponse.data.pageIds.length > 0) {
-                  const pageId = wireframeResponse.data.pageIds[0];
-                  
-                  // Break down the prompt into individual UI elements with hierarchy
-                  const elements = breakDownPromptIntoElements(prompt, type, style);
-                  
-                  logger.info(`Creating wireframe with ${elements.length} elements in a hierarchical structure...`);
-                  
-                  // Map to store created element IDs for parent-child relationships
-                  const elementIdMap: {[key: string]: string} = {};
-                  
-                  // Create each element in sequence
-                  for (let i = 0; i < elements.length; i++) {
-                    const element = elements[i];
-                    
-                    // Generate a unique ID for each element command
-                    const elementCommandId = `${pluginCommandId}_elem_${i}`;
-                    
-                    // Map to the same MCP request for the response
-                    pluginBridge.storeMcpRequestId(elementCommandId, mcpRequestId);
-                    
-                    // Determine parent ID
-                    let parentId = pageId;
-                    if (element.childOf && elementIdMap[element.childOf]) {
-                      parentId = elementIdMap[element.childOf];
-                    }
-                    
-                    // Store element identifier for references
-                    const elementKey = element.type + '-' + i;
-                    
-                    // Create the element command with positioning
-                    const elementCommand: PluginCommand = {
-                      type: 'ADD_ELEMENT',
-                      payload: {
-                        elementType: element.type.toUpperCase(),
-                        parent: parentId,
-                        properties: {
-                          name: `${element.type} - ${element.description.substring(0, 20)}...`,
-                          text: element.description,
-                          content: element.description,
-                          style: style,
-                          position: element.position,
-                          layoutPosition: element.layoutPosition,
-                          styles: element.styles || {}
-                        }
-                      },
-                      id: elementCommandId
-                    };
-                    
-                    logger.info(`Creating element ${i+1}/${elements.length}: ${element.type} with parent ${parentId === pageId ? 'PAGE' : parentId}`);
-                    
-                    try {
-                      // Send the command
-                      const response = await sendPluginCommand<PluginResponse>(elementCommand);
-                      
-                      // Store the created element ID for future parent references
-                      if (response.success && response.data?.id) {
-                        elementIdMap[elementKey] = response.data.id;
-                        
-                        // If this is the root container for a type, store its ID
-                        if (i === 0 || (element.childOf === undefined && element.type === 'frame')) {
-                          // This is likely a container/main frame, register it with its proper name for child references
-                          if (type === 'website' || type === 'landing page') {
-                            elementIdMap['main-container'] = response.data.id;
-                          } else if (type === 'mobile app') {
-                            elementIdMap['app-container'] = response.data.id;
-                          } else if (type === 'dashboard') {
-                            elementIdMap['dashboard-container'] = response.data.id;
-                          }
-                          
-                          if (element.description.includes('content')) {
-                            elementIdMap['dashboard-content'] = response.data.id;
-                          }
-                        }
-                        
-                        logger.debug(`Created element ${elementKey} with ID ${response.data.id}`);
-                      } else {
-                        logger.warn(`Failed to create element ${elementKey}`, response.error);
-                      }
-                      
-                      // Small delay to allow Figma to process each element
-                      await new Promise(resolve => setTimeout(resolve, 300));
-                    } catch (elemError) {
-                      logger.warn(`Error creating element ${element.type}`, elemError as Error);
-                      // Continue with other elements
-                    }
-                  }
-                  
-                  // Return success with reference to created element IDs map
-                  return {
-                    content: [{ 
-                      type: "text", 
-                      text: `Generated ${type} design with ${elements.length} properly positioned UI elements based on your description` 
-                    }],
-                    isError: false
-                  };
-                } else {
-                  // If wireframe creation failed, just send the wireframe command but don't wait
-                  sendPluginCommand(wireframeCommand).catch(error => {
-                    logger.error('Error in plugin command execution', error as Error);
-                  });
-                  
-                  return {
-                    content: [{ 
-                      type: "text", 
-                      text: `Processing request to generate ${type} design...` 
-                    }],
-                    isError: false,
-                    _isPlaceholder: true
-                  };
-                }
-              }
-        } catch (error) {
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Error generating design: ${error instanceof Error ? error.message : String(error)}` 
-            }],
-            isError: true,
-          };
-        }
-      }
-
-      case "export_figma_design": {
-        if (!isExportDesignArgs(args)) {
-          throw new Error("Invalid arguments for export_figma_design");
-        }
-        const { nodeId, format = "png", scale = 1, includeBackground = true } = args;
-        
-        try {
-              // Store the MCP request ID before making the plugin command call
-              pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
-              
-              // Call the plugin with the tracked command ID
-              const command: PluginCommand = {
-                type: 'EXPORT_DESIGN',
-                payload: {
-                  selection: nodeId ? [nodeId] : undefined,
-                  settings: {
-                    format: format.toUpperCase(),
-                    constraint: {
-                      type: 'SCALE',
-                      value: scale
-                    },
-                    includeBackground
-                  }
-                },
-                id: pluginCommandId // Use our trackable ID
-              };
-              
-              if (!useRealMode) {
-          const exportUrl = await exportFigmaDesign(nodeId, format, scale, includeBackground);
-        return {
-            content: [{ 
-              type: "text", 
-              text: `Successfully exported design: ${exportUrl}` 
-            }],
-          isError: false,
-        };
-              } else {
-                // In real mode, send the command but don't wait for response here
-                sendPluginCommand(command).catch(error => {
-                  logger.error('Error in plugin command execution', error as Error);
-                });
-                
-                return {
-                  content: [{ 
-                    type: "text", 
-                    text: `Processing request to export design...` 
-                  }],
-                  isError: false,
-                  _isPlaceholder: true
-                };
-              }
-        } catch (error) {
+        // Validate required parameters
+        if (!params.characters) {
+          logger.error('Text creation failed: characters parameter is required');
           return {
             content: [{ 
               type: "text", 
-              text: `Error exporting design: ${error instanceof Error ? error.message : String(error)}` 
+              text: `Invalid params: characters parameter is required` 
             }],
-            isError: true,
+            isError: true
           };
         }
+        
+        // Default text parameters
+        const fontSize = params.fontSize ?? 16;
+        
+        if (useRealMode) {
+          try {
+            // Send the command to the plugin
+            logger.debug(`Sending CREATE_TEXT command to plugin with params: ${JSON.stringify(params)}`);
+            
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'CREATE_TEXT',
+              id: pluginCommandId,
+              payload: {
+                ...params,
+                fontSize
+              }
+            });
+            
+            logger.info('Text creation command sent successfully');
+        return {
+            content: [{ 
+              type: "text", 
+                text: `Text creation command sent successfully` 
+            }],
+              isError: false
+        };
+        } catch (error) {
+            logger.error(`Text creation failed: ${error}`);
+        return {
+            content: [{ 
+              type: "text", 
+                text: `Error creating text: ${error instanceof Error ? error.message : String(error)}` 
+              }],
+              isError: true
+            };
+          }
+        } else {
+          logger.info('Mock mode: Simulating text creation');
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Created text "${params.characters.substring(0, 20)}${params.characters.length > 20 ? '...' : ''}" at (${params.x || 0},${params.y || 0})` 
+            }],
+            isError: false
+          };
+        }
+      };
+      
+      const createFrameHandler = (params: any) => {
+        logger.debug(`Creating frame with params: ${JSON.stringify(params)}`);
+        
+        // Default width and height if not provided
+        const width = params.width ?? 400;
+        const height = params.height ?? 300;
+        
+        if (useRealMode) {
+          try {
+            // Send the command to the plugin
+            logger.debug(`Sending CREATE_FRAME command to plugin with params: ${JSON.stringify(params)}`);
+            
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'CREATE_FRAME',
+              id: pluginCommandId,
+              payload: {
+                ...params,
+                width,
+                height
+              }
+            });
+            
+            logger.info('Frame creation command sent successfully');
+        return {
+            content: [{ 
+              type: "text", 
+                text: `Frame creation command sent successfully` 
+            }],
+              isError: false
+        };
+        } catch (error) {
+            logger.error(`Frame creation failed: ${error}`);
+          return {
+            content: [{ 
+              type: "text", 
+                text: `Error creating frame: ${error instanceof Error ? error.message : String(error)}` 
+              }],
+              isError: true
+            };
+          }
+        } else {
+          logger.info('Mock mode: Simulating frame creation');
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Created frame${params.name ? ` "${params.name}"` : ''} ${width}x${height} at (${params.x || 0},${params.y || 0})` 
+            }],
+            isError: false
+          };
+        }
+      };
+      
+      const createEllipseHandler = (params: any) => {
+        logger.debug(`Creating ellipse with params: ${JSON.stringify(params)}`);
+        
+        // Default width and height if not provided
+        const width = params.width ?? 100;
+        const height = params.height ?? 100;
+        
+        if (useRealMode) {
+          try {
+            // Send the command to the plugin
+            logger.debug(`Sending CREATE_ELLIPSE command to plugin with params: ${JSON.stringify(params)}`);
+            
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'CREATE_ELLIPSE',
+              id: pluginCommandId,
+              payload: {
+                ...params,
+                width,
+                height
+              }
+            });
+            
+            logger.info('Ellipse creation command sent successfully');
+        return {
+            content: [{ 
+              type: "text", 
+                text: `Ellipse creation command sent successfully` 
+            }],
+              isError: false
+        };
+        } catch (error) {
+            logger.error(`Ellipse creation failed: ${error}`);
+        return {
+            content: [{ 
+              type: "text", 
+                text: `Error creating ellipse: ${error instanceof Error ? error.message : String(error)}` 
+              }],
+              isError: true
+            };
+          }
+        } else {
+          logger.info('Mock mode: Simulating ellipse creation');
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Created ellipse ${width}x${height} at (${params.x || 0},${params.y || 0})` 
+            }],
+            isError: false
+          };
+        }
+      };
+      
+      const createLineHandler = (params: any) => {
+        logger.debug(`Creating line with params: ${JSON.stringify(params)}`);
+        
+        // Default line parameters
+        const width = params.width ?? 100;
+        const height = params.height ?? 0; // Default to horizontal line
+        
+        if (useRealMode) {
+          try {
+            // Send the command to the plugin
+            logger.debug(`Sending CREATE_LINE command to plugin with params: ${JSON.stringify(params)}`);
+            
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'CREATE_LINE',
+              id: pluginCommandId,
+              payload: {
+                ...params,
+                width,
+                height
+              }
+            });
+            
+            logger.info('Line creation command sent successfully');
+            return {
+              content: [{ 
+                type: "text", 
+                text: `Line creation command sent successfully` 
+              }],
+              isError: false
+            };
+          } catch (error) {
+            logger.error(`Line creation failed: ${error}`);
+            return {
+              content: [{ 
+                type: "text", 
+                text: `Error creating line: ${error instanceof Error ? error.message : String(error)}` 
+              }],
+              isError: true
+            };
+          }
+        } else {
+          logger.info('Mock mode: Simulating line creation');
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Created line from (${params.x || 0},${params.y || 0}) with width=${width}, height=${height}` 
+            }],
+            isError: false
+          };
+        }
+      };
+      
+      const createComponentHandler = (params: any) => {
+        logger.debug(`Creating component with params: ${JSON.stringify(params)}`);
+        
+        // Default width and height if not provided
+        const width = params.width ?? 200;
+        const height = params.height ?? 100;
+        
+        if (useRealMode) {
+          try {
+            // Send the command to the plugin
+            logger.debug(`Sending CREATE_COMPONENT command to plugin with params: ${JSON.stringify(params)}`);
+            
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'CREATE_COMPONENT',
+              id: pluginCommandId,
+              payload: {
+                ...params,
+                width,
+                height
+              }
+            });
+            
+            logger.info('Component creation command sent successfully');
+        return {
+            content: [{ 
+              type: "text", 
+                text: `Component creation command sent successfully` 
+            }],
+              isError: false
+        };
+        } catch (error) {
+            logger.error(`Component creation failed: ${error}`);
+          return {
+            content: [{ 
+              type: "text", 
+                text: `Error creating component: ${error instanceof Error ? error.message : String(error)}` 
+              }],
+              isError: true
+            };
+          }
+        } else {
+          logger.info('Mock mode: Simulating component creation');
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Created component${params.name ? ` "${params.name}"` : ''} ${width}x${height} at (${params.x || 0},${params.y || 0})` 
+            }],
+            isError: false
+          };
+        }
+      };
+      
+      // Update the toolHandlers map to include all the handlers
+      const toolHandlers: Record<string, Function> = {
+        'create_rectangle': createRectangleHandler,
+        'create_text': createTextHandler,
+        'create_frame': createFrameHandler,
+        'create_ellipse': createEllipseHandler,
+        'create_line': createLineHandler,
+        'create_component': createComponentHandler
+      };
+      
+      // Look up and call the handler if it exists
+      if (toolHandlers[name]) {
+        logger.info(`Using registered handler for tool: ${name}`);
+        return toolHandlers[name](args);
       }
+      
+      // Legacy tool handling with switch statement
+      switch (name) {
+        case 'create_figma_frame': {
+          const { x, y, width = 400, height = 300, name: frameName } = args;
+          logger.info(`Creating figma frame at (${x}, ${y}) with dimensions ${width}x${height} and name "${frameName}"`);
+          
+          if (useRealMode) {
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'CREATE_WIREFRAME',
+              id: pluginCommandId,
+              payload: {
+                description: frameName,
+                pages: ['Home'],
+                style: 'minimal',
+                dimensions: { width, height },
+                designSystem: { background: '#FFFFFF' },
+                renamePage: false
+              }
+            });
+          }
+          
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Frame creation command sent` 
+            }],
+            isError: false
+          };
+        }
+        
+        case 'create_figma_component': {
+          const { x, y, width = 200, height = 100, name: componentName } = args;
+          logger.info(`Creating figma component at (${x}, ${y}) with dimensions ${width}x${height} and name "${componentName}"`);
+          
+          if (useRealMode) {
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'CREATE_WIREFRAME',
+              id: pluginCommandId,
+              payload: {
+                description: componentName,
+                type: 'component',
+                x, y, width, height
+              }
+            });
+          }
+          
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Component creation command sent` 
+            }],
+            isError: false
+          };
+        }
+        
+        case 'style_figma_node': {
+          const { node_id, styles } = args;
+          logger.info(`Styling figma node ${node_id} with styles: ${JSON.stringify(styles)}`);
+          
+          if (useRealMode) {
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'STYLE_ELEMENT',
+              id: pluginCommandId,
+              payload: {
+                elementId: node_id,
+                styles
+              }
+            });
+          }
+          
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Style command sent` 
+            }],
+            isError: false
+          };
+        }
+        
+        case 'generate_figma_design': {
+          const { prompt, parent_id = null } = args as { prompt: string; parent_id?: string | null };
+          logger.info(`Generating figma design with prompt: "${prompt}" and parent: ${parent_id}`);
+          
+          if (useRealMode) {
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            // Generate design based on prompt
+            const designId = await generateFigmaDesign(prompt, 'ui', 'modern', { id: mcpRequestId });
+            
+            return {
+              content: [{ 
+                type: "text", 
+                text: `Generated design based on your prompt with ID: ${designId}` 
+              }],
+              isError: false
+            };
+          } else {
+            return {
+              content: [{ 
+                type: "text", 
+                text: `Mock mode: Would generate design from prompt: "${prompt.substring(0, 30)}${prompt.length > 30 ? '...' : ''}"` 
+              }],
+              isError: false
+            };
+          }
+        }
+        
+        case 'export_figma_design': {
+          const { node_id, format = 'png' } = args;
+          logger.info(`Exporting figma design node ${node_id} as ${format}`);
+          
+          if (useRealMode) {
+            // Store the MCP request ID so we can map the response
+            pluginBridge.storeMcpRequestId(pluginCommandId, mcpRequestId);
+            
+            pluginBridge.sendCommand({
+              type: 'EXPORT_DESIGN',
+              id: pluginCommandId,
+              payload: {
+                nodeId: node_id,
+                format
+              }
+            });
+          }
+          
+          return {
+            content: [{ 
+              type: "text", 
+              text: `Export command sent` 
+            }],
+            isError: false
+          };
+        }
+        
+        case 'create_text':
+        case 'create_frame': 
+          logger.warn(`Tool ${name} not yet fully implemented`);
+          return {
+            content: [{ 
+              type: "text", 
+              text: `The tool "${name}" is not fully implemented yet.` 
+            }],
+            isError: true
+          };
 
       default:
-            logger.warn('Unknown tool requested', { toolName: name });
+          logger.error(`Unknown tool: ${name}`);
         return {
-          content: [{ type: "text", text: `Unknown tool: ${name}` }],
-          isError: true,
+            content: [{ 
+              type: "text", 
+              text: `Method not found: ${name}` 
+            }],
+            isError: true
         };
     }
   } catch (error) {
-        logger.error('Error handling tool call', error as Error);
+      logger.error(`Error handling tool call: ${error}`);
     return {
-      content: [
-        {
+        content: [{ 
           type: "text",
-          text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      ],
-      isError: true,
+          text: `Internal error: ${error instanceof Error ? error.message : String(error)}` 
+        }],
+        isError: true
     };
   }
 });
 
-    // Register prompts
-    server.setRequestHandler(ListPromptsRequestSchema, async () => {
-      return {
-  prompts: PROMPTS
-      };
-    });
-
-    server.setRequestHandler(GetPromptRequestSchema, async (request: any) => {
-  const { name, arguments: args } = request.params;
-      logger.info('Handling GetPrompt request', { promptName: name });
+  // Register tools using the server approach from the existing code
+  // Since registerTools doesn't exist on Server, use setRequestHandler like existing code
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    logger.info('Handling ListToolsRequest');
+    
+    // Create a properly formatted list of all available tools using the Tool constants
+    const allTools = [
+      // Direct API tools
+      CREATE_RECTANGLE_TOOL,
+      CREATE_TEXT_TOOL,
+      CREATE_FRAME_TOOL,
+      CREATE_ELLIPSE_TOOL,
+      CREATE_LINE_TOOL,
+      CREATE_COMPONENT_TOOL,
+      
+      // Legacy tools renamed to match Claude's expectations
+      STYLE_DESIGN_TOOL,
+      PROMPT_TO_DESIGN_TOOL,
+      EXPORT_DESIGN_TOOL
+    ];
+    
+    return { tools: allTools };
+  });
   
-      try {
+  // Register prompts handling remains the same
+  server.setRequestHandler(ListPromptsRequestSchema, async () => {
+    return {
+  prompts: PROMPTS
+    };
+  });
+
+  server.setRequestHandler(GetPromptRequestSchema, async (request: any) => {
+  const { name, arguments: args } = request.params;
+    logger.info('Handling GetPrompt request', { promptName: name });
+  
+    try {
   switch (name) {
     case "create-website-design": {
       const description = args?.description || "";
@@ -2006,27 +2332,65 @@ async function runServer() {
       };
     }
     
-    default:
-            const errorMsg = `Prompt not found: ${name}`;
-            logger.warn('Prompt not found', { promptName: name });
-            throw new Error(errorMsg);
+        default: {
+          const errorMsg = `Prompt not found: ${name}`;
+          logger.warn('Prompt not found', { promptName: name });
+          throw new Error(errorMsg);
         }
-      } catch (error) {
-        logger.error('Error handling GetPrompt request', error as Error);
-        throw error; // Let the MCP SDK handle the error response
       }
-    });
+    } catch (error) {
+      logger.error('Error handling GetPrompt request', error as Error);
+      throw error; // Let the MCP SDK handle the error response
+    }
+  });
+  
+  // Register progress handler
+  server.setNotificationHandler(ProgressNotificationSchema, (notification: any) => {
+    const { toolCallId, progress } = notification.params;
+    logger.info('Tool call progress notification', { toolCallId, progress });
+  });
+  
+  // Return server instance
+  return server;
+}
+
+// Run the server
+async function runServer() {
+  try {
+    // Initialize server
+    const server = await initializeServer();
     
-    // Register progress handler
-    server.setNotificationHandler(ProgressNotificationSchema, (notification: any) => {
-      const { toolCallId, progress } = notification.params;
-      logger.info('Tool call progress notification', { toolCallId, progress });
+    // Log server mode
+    if (useRealMode) {
+      logger.info(`Server running in WebSocket mode on ${wsHost}:${wsPort}`);
+      logger.info('WebSocket server is ready for Figma plugin connections');
+      logger.info('Connect from Figma plugin UI using the WebSocket URL');
+    } else {
+      logger.info('Server running in Stdio mode (mock)');
+      logger.info('To connect Claude to this MCP server:');
+      logger.info('1. In Claude\'s MCP inspector, select "Stdio" transport');
+      logger.info('2. Enter command: "node dist/index.js" (local) or use Docker command');
+    }
+    
+    // Log available tools
+    logger.info('Available tools:', { 
+      tools: [
+        CREATE_RECTANGLE_TOOL.name,
+        CREATE_TEXT_TOOL.name,
+        CREATE_FRAME_TOOL.name,
+        CREATE_ELLIPSE_TOOL.name,
+        CREATE_LINE_TOOL.name,
+        CREATE_COMPONENT_TOOL.name,
+        STYLE_DESIGN_TOOL.name,
+        PROMPT_TO_DESIGN_TOOL.name,
+        EXPORT_DESIGN_TOOL.name
+      ]
     });
     
     logger.info('Figma MCP Server started successfully');
   } catch (error) {
     logger.error('Failed to start server', error as Error);
-    process.exit(1);
+  process.exit(1);
   }
 }
 
